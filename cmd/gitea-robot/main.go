@@ -329,6 +329,9 @@ func mcpServerCmd() {
 		switch req.Method {
 		case "initialize":
 			resp = handleInitialize(req)
+		case "notifications/initialized":
+			// This is a notification, no response needed
+			continue
 		case "tools/list":
 			resp = handleToolsList(req)
 		case "tools/call":
@@ -402,13 +405,22 @@ type MCPError struct {
 
 // handleInitialize handles the initialize request
 func handleInitialize(req MCPRequest) any {
+	// Parse the protocol version from the request
+	var params struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	protocolVersion := "2024-11-05"
+	if err := json.Unmarshal(req.Params, &params); err == nil && params.ProtocolVersion != "" {
+		protocolVersion = params.ProtocolVersion
+	}
+
 	return MCPResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result: map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": protocolVersion,
 			"capabilities": map[string]any{
-				"tools": map[string]bool{},
+				"tools": map[string]any{},
 			},
 			"serverInfo": map[string]string{
 				"name":    "gitea-robot",
