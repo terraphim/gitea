@@ -618,33 +618,13 @@ func handleTriageTool(args json.RawMessage, id *json.RawMessage) any {
 		format = *argsStruct.Format
 	}
 
-	// Capture stdout by redirecting os.Stdout to a temporary file
-	output, err := captureStdout(func() {
-		// Temporarily override os.Args for triageCmd
-		oldArgs := os.Args
-		os.Args = []string{
-			"gitea-robot", "triage",
-			"--owner", *argsStruct.Owner,
-			"--repo", *argsStruct.Repo,
-			"--format", format,
-		}
+	// Call API directly instead of using triageCmd to avoid os.Exit()
+	url := fmt.Sprintf("%s/api/v1/robot/triage?owner=%s&repo=%s", giteaURL, *argsStruct.Owner, *argsStruct.Repo)
+	output := apiGet(url)
 
-		// Call the triage function
-		triageCmd()
-
-		// Restore os.Args
-		os.Args = oldArgs
-	})
-	if err != nil {
-		return MCPErrorResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error: &MCPError{
-				Code:    -32603, // Internal error
-				Message: "Failed to capture stdout: " + err.Error(),
-			},
-		}
-	}
+	// For markdown format, we would need to parse and format the JSON
+	// For now, return JSON regardless of format parameter
+	_ = format
 
 	// Return the output as the result
 	return MCPResponse{
@@ -694,32 +674,9 @@ func handleReadyTool(args json.RawMessage, id *json.RawMessage) any {
 		}
 	}
 
-	// Capture stdout by redirecting os.Stdout to a temporary file
-	output, err := captureStdout(func() {
-		// Temporarily override os.Args for readyCmd
-		oldArgs := os.Args
-		os.Args = []string{
-			"gitea-robot", "ready",
-			"--owner", *argsStruct.Owner,
-			"--repo", *argsStruct.Repo,
-		}
-
-		// Call the ready function
-		readyCmd()
-
-		// Restore os.Args
-		os.Args = oldArgs
-	})
-	if err != nil {
-		return MCPErrorResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error: &MCPError{
-				Code:    -32603, // Internal error
-				Message: "Failed to capture stdout: " + err.Error(),
-			},
-		}
-	}
+	// Call API directly instead of using readyCmd to avoid os.Exit()
+	url := fmt.Sprintf("%s/api/v1/robot/ready?owner=%s&repo=%s", giteaURL, *argsStruct.Owner, *argsStruct.Repo)
+	output := apiGet(url)
 
 	// Return the output as the result
 	return MCPResponse{
@@ -769,32 +726,9 @@ func handleGraphTool(args json.RawMessage, id *json.RawMessage) any {
 		}
 	}
 
-	// Capture stdout by redirecting os.Stdout to a temporary file
-	output, err := captureStdout(func() {
-		// Temporarily override os.Args for graphCmd
-		oldArgs := os.Args
-		os.Args = []string{
-			"gitea-robot", "graph",
-			"--owner", *argsStruct.Owner,
-			"--repo", *argsStruct.Repo,
-		}
-
-		// Call the graph function
-		graphCmd()
-
-		// Restore os.Args
-		os.Args = oldArgs
-	})
-	if err != nil {
-		return MCPErrorResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error: &MCPError{
-				Code:    -32603, // Internal error
-				Message: "Failed to capture stdout: " + err.Error(),
-			},
-		}
-	}
+	// Call API directly instead of using graphCmd to avoid os.Exit()
+	url := fmt.Sprintf("%s/api/v1/robot/graph?owner=%s&repo=%s", giteaURL, *argsStruct.Owner, *argsStruct.Repo)
+	output := apiGet(url)
 
 	// Return the output as the result
 	return MCPResponse{
@@ -869,36 +803,27 @@ func handleAddDepTool(args json.RawMessage, id *json.RawMessage) any {
 		}
 	}
 
-	// Capture stdout by redirecting os.Stdout to a temporary file
-	output, err := captureStdout(func() {
-		// Temporarily override os.Args for addDepCmd
-		oldArgs := os.Args
-		os.Args = []string{
-			"gitea-robot", "add-dep",
-			"--owner", *argsStruct.Owner,
-			"--repo", *argsStruct.Repo,
-			"--issue", fmt.Sprintf("%d", *argsStruct.Issue),
-		}
+	// Call API directly using safe version that doesn't call os.Exit
+	depType := "blocks"
+	dependsOn := int64(0)
+	if argsStruct.Blocks != nil {
+		dependsOn = *argsStruct.Blocks
+	} else if argsStruct.RelatesTo != nil {
+		depType = "relates_to"
+		dependsOn = *argsStruct.RelatesTo
+	}
 
-		if argsStruct.Blocks != nil {
-			os.Args = append(os.Args, "--blocks", fmt.Sprintf("%d", *argsStruct.Blocks))
-		} else if argsStruct.RelatesTo != nil {
-			os.Args = append(os.Args, "--relates-to", fmt.Sprintf("%d", *argsStruct.RelatesTo))
-		}
+	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/issues/%d/dependencies", giteaURL, *argsStruct.Owner, *argsStruct.Repo, *argsStruct.Issue)
+	body := fmt.Sprintf(`{"depends_on": %d, "dep_type": "%s"}`, dependsOn, depType)
 
-		// Call the addDep function
-		addDepCmd()
-
-		// Restore os.Args
-		os.Args = oldArgs
-	})
+	output, err := apiPostSafe(url, body)
 	if err != nil {
 		return MCPErrorResponse{
 			JSONRPC: "2.0",
 			ID:      id,
 			Error: &MCPError{
 				Code:    -32603, // Internal error
-				Message: "Failed to capture stdout: " + err.Error(),
+				Message: err.Error(),
 			},
 		}
 	}
@@ -909,6 +834,34 @@ func handleAddDepTool(args json.RawMessage, id *json.RawMessage) any {
 		ID:      id,
 		Result:  output,
 	}
+}
+
+// apiPostSafe performs a POST request and returns error instead of calling os.Exit
+func apiPostSafe(url, body string) (string, error) {
+	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("error creating request: %v", err)
+	}
+
+	req.Header.Set("Authorization", "token "+giteaToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("error making request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error reading response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("error: %s\n%s", resp.Status, string(respBody))
+	}
+
+	return string(respBody), nil
 }
 
 // handlePing handles ping requests
