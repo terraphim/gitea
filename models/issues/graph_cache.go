@@ -56,61 +56,64 @@ func UpdatePageRank(ctx context.Context, repoID, issueID int64, pageRank float64
 	return err
 }
 
-// DependencyWithRepo joins IssueDependency with Issue to get repo information
+// DependencyWithRepo holds a single dependency edge with both issue IDs.
+// Populated via raw SQL to avoid xorm struct-tag mapping issues with JOIN queries.
 type DependencyWithRepo struct {
-	IssueID      int64 `xorm:"issue_dependency.issue_id"`
-	DependencyID int64 `xorm:"issue_dependency.dependency_id"`
-	IsClosed     bool  `xorm:"issue.is_closed"`
+	IssueID      int64 `xorm:"'issue_id'"`
+	DependencyID int64 `xorm:"'dependency_id'"`
 }
 
-// CalculatePageRank computes PageRank for all issues in a repository
-// Uses existing IssueDependency model from Gitea
-// Excludes closed issues from the graph (per specification interview)
+// CalculatePageRank computes PageRank for all issues in a repository.
+//
+// Direction: blocked issues "vote for" their blockers, so root/blocker issues
+// accumulate the highest PageRank scores. This matches the desired behaviour
+// for task prioritisation where the most-depended-upon issues rank first.
+//
+// Closed issues are excluded from the graph entirely.
 func CalculatePageRank(ctx context.Context, repoID int64, dampingFactor float64, iterations int) error {
 	startTime := time.Now()
 
-	// Get all dependencies for this repo, joined with issue info to filter by repoID and closed status
-	// This query filters by repoID and excludes closed issues
+	// Fetch all dependency edges where BOTH sides belong to this repo and
+	// BOTH sides are open. Uses raw SQL with explicit column selection to
+	// avoid xorm struct-tag mapping issues (fixes issue #6).
+	// DISTINCT eliminates duplicates that previously arose from two
+	// overlapping queries (fixes issue #8).
 	var deps []DependencyWithRepo
 	err := db.GetEngine(ctx).
-		Table("issue_dependency").
-		Join("INNER", "issue", "issue.id = issue_dependency.issue_id AND issue.repo_id = ?", repoID).
-		Where("issue.is_closed = ?", false).
+		SQL(`SELECT DISTINCT d.issue_id, d.dependency_id
+			 FROM issue_dependency d
+			 INNER JOIN issue i1 ON i1.id = d.issue_id
+			 INNER JOIN issue i2 ON i2.id = d.dependency_id
+			 WHERE i1.repo_id = ? AND i2.repo_id = ?
+			   AND i1.is_closed = ? AND i2.is_closed = ?`,
+			repoID, repoID, false, false).
 		Find(&deps)
 	if err != nil {
 		return err
 	}
-
-	// Also get dependencies where the issue is the dependency (blocked by)
-	var deps2 []DependencyWithRepo
-	err = db.GetEngine(ctx).
-		Table("issue_dependency").
-		Join("INNER", "issue", "issue.id = issue_dependency.dependency_id AND issue.repo_id = ?", repoID).
-		Where("issue.is_closed = ?", false).
-		Find(&deps2)
-	if err != nil {
-		return err
-	}
-
-	// Merge both dependency lists
-	deps = append(deps, deps2...)
 
 	if len(deps) == 0 {
 		log.Info("PageRank: No dependencies found for repo %d", repoID)
 		return nil
 	}
 
-	// Build issue set and adjacency list
-	// Track which issues actually exist (not orphans)
+	// Build the set of valid issues and the adjacency structure.
+	//
+	// adj[blockedID] = list of blockerIDs that blockedID depends on.
+	// In PageRank terms each blocked issue "links to" (votes for) its blockers.
+	//
+	// incoming[blockerID] = list of blockedIDs that vote for this blocker.
+	// This is the reverse map used during power iteration to accumulate rank
+	// on the blocker nodes (fixes issue #7 -- direction was previously inverted).
 	validIssues := make(map[int64]bool)
-	// adj[depID] = list of issues that depend on it (blocked by it)
-	adj := make(map[int64][]int64)
+	adj := make(map[int64][]int64)      // outgoing: blockedID -> [blockerIDs]
+	incoming := make(map[int64][]int64)  // incoming: blockerID -> [blockedIDs that vote for it]
 
 	for _, dep := range deps {
-		// Skip orphan references - if issue doesn't exist in deps, it's an orphan
 		validIssues[dep.IssueID] = true
 		validIssues[dep.DependencyID] = true
-		adj[dep.DependencyID] = append(adj[dep.DependencyID], dep.IssueID)
+		adj[dep.IssueID] = append(adj[dep.IssueID], dep.DependencyID)
+		incoming[dep.DependencyID] = append(incoming[dep.DependencyID], dep.IssueID)
 	}
 
 	issueCount := len(validIssues)
@@ -119,41 +122,39 @@ func CalculatePageRank(ctx context.Context, repoID int64, dampingFactor float64,
 		return nil
 	}
 
-	// Initialize PageRank scores
+	// Initialise PageRank scores uniformly.
 	pageRanks := make(map[int64]float64)
 	for issueID := range validIssues {
 		pageRanks[issueID] = 1.0 / float64(issueCount)
 	}
 
-	// Power iteration
+	// Power iteration -- O(edges) per iteration.
+	baseLine := (1.0 - dampingFactor) / float64(issueCount)
 	for i := 0; i < iterations; i++ {
-		newRanks := make(map[int64]float64)
+		newRanks := make(map[int64]float64, issueCount)
 
+		// Start every node with the teleportation baseline.
 		for issueID := range validIssues {
-			newRank := (1.0 - dampingFactor) / float64(issueCount)
-
-			// Sum contributions from blockers (upstream)
-			// Find all issues that block this one
-			for _, dep := range deps {
-				if dep.IssueID == issueID {
-					blockerID := dep.DependencyID
-					// Skip if blocker doesn't have valid PageRank
-					if currentRank, ok := pageRanks[blockerID]; ok {
-						outDegree := len(adj[blockerID])
-						if outDegree > 0 {
-							newRank += dampingFactor * currentRank / float64(outDegree)
-						}
-					}
-				}
-			}
-
-			newRanks[issueID] = newRank
+			newRanks[issueID] = baseLine
 		}
+
+		// For each voter (blocked issue), distribute its rank equally among
+		// the blockers it depends on.
+		for voterID, targets := range adj {
+			outDegree := len(targets)
+			if outDegree == 0 {
+				continue
+			}
+			contribution := dampingFactor * pageRanks[voterID] / float64(outDegree)
+			for _, targetID := range targets {
+				newRanks[targetID] += contribution
+			}
+		}
+
 		pageRanks = newRanks
 	}
 
-	// Update cache - log errors but continue with remaining issues
-	// (per specification interview: partial failure returns partial results)
+	// Update cache -- log errors but continue with remaining issues.
 	successCount := 0
 	errorCount := 0
 	for issueID, rank := range pageRanks {
@@ -172,8 +173,8 @@ func CalculatePageRank(ctx context.Context, repoID int64, dampingFactor float64,
 	return nil
 }
 
-// EnsureRepoPageRankComputed ensures PageRank is computed for a repository
-// Calculates if not already cached, otherwise returns cached data
+// EnsureRepoPageRankComputed ensures PageRank is computed for a repository.
+// Calculates if not already cached, otherwise returns cached data.
 func EnsureRepoPageRankComputed(ctx context.Context, repoID int64, dampingFactor float64, iterations int) error {
 	// Check if we have cached PageRank data for this repo
 	hasCache, err := hasPageRankCache(ctx, repoID)
@@ -182,7 +183,7 @@ func EnsureRepoPageRankComputed(ctx context.Context, repoID int64, dampingFactor
 	}
 
 	if !hasCache {
-		// Calculate PageRank - lazy calculation per spec interview
+		// Calculate PageRank -- lazy calculation per spec interview
 		return CalculatePageRank(ctx, repoID, dampingFactor, iterations)
 	}
 
@@ -198,9 +199,9 @@ func hasPageRankCache(ctx context.Context, repoID int64) (bool, error) {
 	return count > 0, nil
 }
 
-// GetRankedIssues returns issues sorted by PageRank score
+// GetRankedIssues returns issues sorted by PageRank score.
 // Hybrid approach: issues with dependencies get calculated PageRank,
-// issues without get baseline score (1-damping)
+// issues without get baseline score (1-damping).
 func GetRankedIssues(ctx context.Context, repoID int64, limit int) ([]*Issue, error) {
 	// Get all open issues for the repo using the Issues function
 	issues, err := Issues(ctx, &IssuesOptions{
