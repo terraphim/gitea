@@ -5,6 +5,7 @@ package robot
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	issues_model "code.gitea.io/gitea/models/issues"
@@ -69,11 +70,40 @@ func (s *Service) Triage(ctx context.Context, repoID int64) (*TriageResponse, er
 
 	log.Trace("Generating triage report for repo %d", repoID)
 
-	// Calculate PageRank first
+	// Check cache first
+	cache := GetPageRankCache()
+	if scores, ok := cache.Get(repoID); ok {
+		log.Trace("Using cached PageRank for repo %d", repoID)
+		return s.buildTriageResponse(ctx, repoID, scores)
+	}
+
+	// Check if another request is already computing
+	if !cache.StartComputing(repoID) {
+		log.Trace("PageRank computation already in progress for repo %d", repoID)
+		// Return error indicating computation in progress
+		return nil, fmt.Errorf("PageRank computation in progress, please retry")
+	}
+	defer cache.FinishComputing(repoID)
+
+	// Calculate PageRank
 	if err := issues_model.CalculatePageRank(ctx, repoID, 0.85, 100); err != nil {
 		return nil, err
 	}
 
+	// Get PageRank scores from database
+	scores, err := issues_model.GetPageRanksForRepo(ctx, repoID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the results
+	cache.Set(repoID, scores)
+
+	return s.buildTriageResponse(ctx, repoID, scores)
+}
+
+// buildTriageResponse builds the triage response from PageRank scores
+func (s *Service) buildTriageResponse(ctx context.Context, repoID int64, pageRanks map[int64]float64) (*TriageResponse, error) {
 	// Get all issues for repo using IssuesOptions
 	opts := &issues_model.IssuesOptions{
 		RepoIDs: []int64{repoID},
@@ -100,7 +130,11 @@ func (s *Service) Triage(ctx context.Context, repoID int64) (*TriageResponse, er
 			continue
 		}
 
-		rank, _ := issues_model.GetPageRank(ctx, repoID, issue.ID)
+		// Use cached PageRank score
+		rank := 0.0
+		if score, ok := pageRanks[issue.ID]; ok {
+			rank = score
+		}
 
 		recommendations = append(recommendations, Recommendation{
 			ID:       issue.ID,

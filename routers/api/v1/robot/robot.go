@@ -89,7 +89,8 @@ func Triage(ctx *context.APIContext) {
 
 	// 2. Validate input
 	if err := validateOwnerRepoInput(owner, repoName); err != nil {
-		ctx.APIError(http.StatusBadRequest, err.Error())
+		// Return 404 to avoid leaking validation details
+		ctx.APIErrorNotFound()
 		return
 	}
 
@@ -100,12 +101,8 @@ func Triage(ctx *context.APIContext) {
 	// 4. Lookup repository
 	repository, err := repo_model.GetRepositoryByOwnerAndName(ctx, owner, repoName)
 	if err != nil {
-		if db.IsErrNotExist(err) {
-			// Return 404 to avoid leaking repository existence
-			ctx.APIErrorNotFound()
-			return
-		}
-		ctx.APIError(http.StatusInternalServerError, err)
+		// Return 404 for all errors to avoid leaking repository existence
+		ctx.APIErrorNotFound()
 		return
 	}
 

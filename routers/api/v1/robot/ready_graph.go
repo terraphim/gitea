@@ -52,7 +52,8 @@ func Ready(ctx *context.APIContext) {
 
 	// 2. Validate input
 	if err := validateOwnerRepoInput(owner, repoName); err != nil {
-		ctx.APIError(http.StatusBadRequest, err.Error())
+		// Return 404 to avoid leaking validation details
+		ctx.APIErrorNotFound()
 		return
 	}
 
@@ -333,7 +334,8 @@ func Graph(ctx *context.APIContext) {
 
 	// 2. Validate input
 	if err := validateOwnerRepoInput(owner, repoName); err != nil {
-		ctx.APIError(http.StatusBadRequest, err.Error())
+		// Return 404 to avoid leaking validation details
+		ctx.APIErrorNotFound()
 		return
 	}
 
