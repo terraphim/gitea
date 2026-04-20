@@ -193,11 +193,11 @@ func getReadyIssues(ctx *context.APIContext, repository *repo.Repository) ([]Rea
 		return nil, err
 	}
 
-	// Ensure PageRank is computed before reading cache (fixes issue #9).
-	if err := issues.EnsureRepoPageRankComputed(ctx, repository.ID,
+	// Calculate PageRank from live dependency graph (fixes issue #10).
+	if err := issues.CalculatePageRank(ctx, repository.ID,
 		setting.IssueGraphSettings.DampingFactor,
 		setting.IssueGraphSettings.Iterations); err != nil {
-		log.Warn("Failed to ensure PageRank computed for repo %d: %v", repository.ID, err)
+		log.Warn("Failed to calculate PageRank for repo %d: %v", repository.ID, err)
 	}
 
 	// Get PageRank scores for all issues in this repo
