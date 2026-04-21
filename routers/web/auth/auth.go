@@ -186,7 +186,6 @@ func performAutoLogin(ctx *context.Context) bool {
 	return false
 }
 
-func prepareSignInPageData(ctx *context.Context) {
 	ctx.Data["Title"] = ctx.Tr("sign_in")
 	ctx.Data["OAuth2Providers"], _ = oauth2.GetOAuth2Providers(ctx, optional.Some(true))
 	ctx.Data["Title"] = ctx.Tr("sign_in")
