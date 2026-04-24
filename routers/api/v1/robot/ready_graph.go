@@ -5,6 +5,7 @@ package robot
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 
 	"code.gitea.io/gitea/models/db"
@@ -245,6 +246,11 @@ func getReadyIssues(ctx *context.APIContext, repository *repo.Repository) ([]Rea
 			BlockerCount: blockerCount,
 		})
 	}
+
+	// Sort by PageRank descending (highest impact first)
+	sort.Slice(readyIssues, func(i, j int) bool {
+		return readyIssues[i].PageRank > readyIssues[j].PageRank
+	})
 
 	return readyIssues, nil
 }
