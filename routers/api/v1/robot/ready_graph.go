@@ -12,11 +12,10 @@ import (
 	"code.gitea.io/gitea/models/issues"
 	"code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/modules/log"
+	"code.gitea.io/gitea/modules/optional"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/services/context"
 	"code.gitea.io/gitea/services/robot"
-
-	"code.gitea.io/gitea/modules/optional"
 )
 
 // ReadyIssue represents an issue that is ready to be worked on
@@ -567,7 +566,7 @@ func getDependencies(ctx *context.APIContext, issueIDs []int64) ([]GraphEdge, er
 
 	// Build placeholders for IN clause
 	placeholders := make([]string, len(issueIDs))
-	args := make([]interface{}, len(issueIDs))
+	args := make([]any, len(issueIDs))
 	for i, id := range issueIDs {
 		placeholders[i] = "?"
 		args[i] = id

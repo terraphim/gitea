@@ -107,7 +107,7 @@ func CalculatePageRank(ctx context.Context, repoID int64, dampingFactor float64,
 	// on the blocker nodes (fixes issue #7 -- direction was previously inverted).
 	validIssues := make(map[int64]bool)
 	adj := make(map[int64][]int64)      // outgoing: blockedID -> [blockerIDs]
-	incoming := make(map[int64][]int64)  // incoming: blockerID -> [blockedIDs that vote for it]
+	incoming := make(map[int64][]int64) // incoming: blockerID -> [blockedIDs that vote for it]
 
 	for _, dep := range deps {
 		validIssues[dep.IssueID] = true
