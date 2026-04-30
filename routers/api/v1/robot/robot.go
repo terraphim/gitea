@@ -55,6 +55,17 @@ func validateOwnerRepoInput(owner, repo string) error {
 // Returns true if permission is granted, false otherwise
 // Always returns 404 to avoid leaking repository existence
 func checkRepoPermissionForTriage(ctx *context.APIContext, repository *repo_model.Repository) bool {
+	// Anonymous user reaching this point implies the repository is public
+	// (private-repo anonymous access is short-circuited earlier in the
+	// caller). Allow read; do not dereference ctx.Doer.
+	if !ctx.IsSigned || ctx.Doer == nil {
+		if repository.IsPrivate {
+			ctx.APIErrorNotFound()
+			return false
+		}
+		return true
+	}
+
 	// Get user permissions for this repository
 	perm, err := access_model.GetUserRepoPermission(ctx, repository, ctx.Doer)
 	if err != nil {
@@ -111,13 +122,22 @@ func Triage(ctx *context.APIContext) {
 		return
 	}
 
+	// Resolve the actor for audit logging once. ctx.Doer can be nil for
+	// anonymous reads of public repositories, so guard the dereference.
+	var userID int64
+	username := "anonymous"
+	if ctx.IsSigned && ctx.Doer != nil {
+		userID = ctx.Doer.ID
+		username = ctx.Doer.Name
+	}
+
 	// 5. Check permission
 	if !checkRepoPermissionForTriage(ctx, repository) {
 		// checkRepoPermission already set the response
 		// Log the denied access
 		robot.LogRobotAccessQuick(
-			ctx.Doer.ID,
-			ctx.Doer.Name,
+			userID,
+			username,
 			owner,
 			repoName,
 			"/api/v1/robot/triage",
@@ -130,8 +150,8 @@ func Triage(ctx *context.APIContext) {
 
 	// 6. Log access
 	robot.LogRobotAccessQuick(
-		ctx.Doer.ID,
-		ctx.Doer.Name,
+		userID,
+		username,
 		owner,
 		repoName,
 		"/api/v1/robot/triage",
