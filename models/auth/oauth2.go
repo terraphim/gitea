@@ -492,7 +492,6 @@ func (grant *OAuth2Grant) GenerateNewAuthorizationCode(ctx context.Context, redi
 	// for code scanners to grab sensitive tokens.
 	codeSecret := "gta_" + base32Lower.EncodeToString(rBytes)
 
-	validUntil := time.Now().Add(oauth2AuthorizationCodeValidity)
 	code = &OAuth2AuthorizationCode{
 		Grant:               grant,
 		GrantID:             grant.ID,
@@ -500,7 +499,7 @@ func (grant *OAuth2Grant) GenerateNewAuthorizationCode(ctx context.Context, redi
 		Code:                codeSecret,
 		CodeChallenge:       codeChallenge,
 		CodeChallengeMethod: codeChallengeMethod,
-		ValidUntil:          timeutil.TimeStamp(validUntil.Unix()),
+		ValidUntil:          timeutil.TimeStampNow().AddDuration(oauth2AuthorizationCodeValidity),
 	}
 	if err := db.Insert(ctx, code); err != nil {
 		return nil, err

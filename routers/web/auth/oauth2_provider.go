@@ -615,7 +615,9 @@ func handleAuthorizationCode(ctx *context.Context, form forms.AccessTokenForm, s
 		return
 	}
 	if authorizationCode.IsExpired() {
-		_ = authorizationCode.Invalidate(ctx)
+		if err := authorizationCode.Invalidate(ctx); err != nil && !errors.Is(err, auth.ErrOAuth2AuthorizationCodeInvalidated) {
+			log.Error("failed to delete expired OAuth2 authorization code %d: %v", authorizationCode.ID, err)
+		}
 		handleAccessTokenError(ctx, oauth2_provider.AccessTokenError{
 			ErrorCode:        oauth2_provider.AccessTokenErrorCodeInvalidGrant,
 			ErrorDescription: "authorization code expired",
