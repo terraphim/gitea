@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	auth_model "code.gitea.io/gitea/models/auth"
 	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/models/unittest"
 	user_model "code.gitea.io/gitea/models/user"
@@ -50,10 +51,11 @@ func TestRobotAPI_PublicRepoAnonymous(t *testing.T) {
 	req := NewRequestf(t, "GET", "/api/v1/robot/triage?owner=%s&repo=%s", owner.Name, repo.Name)
 	resp := MakeRequest(t, req, http.StatusOK)
 
-	// Verify response structure
-	var result map[string]interface{}
+	// Verify response structure (TriageResponse fields).
+	var result map[string]any
 	DecodeJSON(t, resp, &result)
-	assert.Contains(t, result, "repo_id")
+	assert.Contains(t, result, "quick_ref")
+	assert.Contains(t, result, "recommendations")
 }
 
 // TestRobotAPI_AuthorizedAccess tests that authorized users can access their own repositories
@@ -69,13 +71,19 @@ func TestRobotAPI_AuthorizedAccess(t *testing.T) {
 	req := NewRequestf(t, "GET", "/api/v1/robot/triage?owner=%s&repo=%s", owner.Name, repo.Name)
 	resp := sessionA.MakeRequest(t, req, http.StatusOK)
 
-	// Verify response structure
-	var result map[string]interface{}
+	// Verify response structure (TriageResponse fields).
+	var result map[string]any
 	DecodeJSON(t, resp, &result)
-	assert.Contains(t, result, "repo_id")
+	assert.Contains(t, result, "quick_ref")
+	assert.Contains(t, result, "recommendations")
 }
 
-// TestRobotAPI_InvalidInput tests input validation including path traversal and oversized input
+// TestRobotAPI_InvalidInput tests input validation including path traversal and oversized input.
+//
+// The handlers deliberately return 404 (not 400) for invalid input as a
+// security-by-obscurity measure: a probing client should not be able to
+// distinguish "bad request" from "no such repository". The test
+// expectations therefore assert StatusNotFound.
 func TestRobotAPI_InvalidInput(t *testing.T) {
 	defer tests.PrepareTestEnv(t)()
 
@@ -89,37 +97,39 @@ func TestRobotAPI_InvalidInput(t *testing.T) {
 			name:       "Path traversal in owner",
 			owner:      "../etc/passwd",
 			repo:       "test",
-			expectCode: http.StatusBadRequest,
+			expectCode: http.StatusNotFound,
 		},
 		{
 			name:       "Path traversal in repo",
 			owner:      "user",
 			repo:       "../../../etc/passwd",
-			expectCode: http.StatusBadRequest,
+			expectCode: http.StatusNotFound,
 		},
 		{
+			// Null byte must be URL-encoded; net/http rejects raw control
+			// characters in URLs before the handler runs.
 			name:       "Null byte in owner",
-			owner:      "user\x00",
+			owner:      "user%00",
 			repo:       "test",
-			expectCode: http.StatusBadRequest,
+			expectCode: http.StatusNotFound,
 		},
 		{
 			name:       "Oversized owner name",
 			owner:      strings.Repeat("a", 300),
 			repo:       "test",
-			expectCode: http.StatusBadRequest,
+			expectCode: http.StatusNotFound,
 		},
 		{
 			name:       "Oversized repo name",
 			owner:      "user",
 			repo:       strings.Repeat("b", 300),
-			expectCode: http.StatusBadRequest,
+			expectCode: http.StatusNotFound,
 		},
 		{
 			name:       "Special characters in owner",
 			owner:      "user<script>",
 			repo:       "test",
-			expectCode: http.StatusBadRequest,
+			expectCode: http.StatusNotFound,
 		},
 	}
 
@@ -163,7 +173,7 @@ func TestRobotAPI_ReadyEndpoint(t *testing.T) {
 	req := NewRequestf(t, "GET", "/api/v1/robot/ready?owner=%s&repo=%s", owner.Name, repo.Name)
 	resp := MakeRequest(t, req, http.StatusOK)
 
-	var result map[string]interface{}
+	var result map[string]any
 	DecodeJSON(t, resp, &result)
 	assert.Contains(t, result, "repo_id")
 }
@@ -180,7 +190,7 @@ func TestRobotAPI_GraphEndpoint(t *testing.T) {
 	req := NewRequestf(t, "GET", "/api/v1/robot/graph?owner=%s&repo=%s", owner.Name, repo.Name)
 	resp := MakeRequest(t, req, http.StatusOK)
 
-	var result map[string]interface{}
+	var result map[string]any
 	DecodeJSON(t, resp, &result)
 	assert.Contains(t, result, "nodes")
 	assert.Contains(t, result, "edges")
@@ -207,7 +217,11 @@ func TestRobotAPI_AllEndpoints(t *testing.T) {
 	}
 }
 
-// TestRobotAPI_Integration tests the full integration flow
+// TestRobotAPI_Integration tests the full integration flow.
+//
+// The /api/v1/robot/* endpoints are gated by tokenRequiresScopes for the
+// Issue scope category, so authenticated access requires a real OAuth2
+// token (session cookies alone do not authenticate API requests).
 func TestRobotAPI_Integration(t *testing.T) {
 	defer tests.PrepareTestEnv(t)()
 
@@ -216,16 +230,20 @@ func TestRobotAPI_Integration(t *testing.T) {
 	owner := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: repo.OwnerID})
 	other := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 5})
 
-	// Test 1: Owner can access
+	// Test 1: Owner (with read:issue token) can access
 	sessionOwner := loginUser(t, owner.Name)
-	req1 := NewRequestf(t, "GET", "/api/v1/robot/triage?owner=%s&repo=%s", owner.Name, repo.Name)
-	resp1 := sessionOwner.MakeRequest(t, req1, http.StatusOK)
+	tokenOwner := getTokenForLoggedInUser(t, sessionOwner, auth_model.AccessTokenScopeReadIssue)
+	req1 := NewRequestf(t, "GET", "/api/v1/robot/triage?owner=%s&repo=%s", owner.Name, repo.Name).
+		AddTokenAuth(tokenOwner)
+	resp1 := MakeRequest(t, req1, http.StatusOK)
 	assert.NotNil(t, resp1)
 
-	// Test 2: Other user cannot access
+	// Test 2: Other user (with their own read:issue token) cannot access this private repo
 	sessionOther := loginUser(t, other.Name)
-	req2 := NewRequestf(t, "GET", "/api/v1/robot/triage?owner=%s&repo=%s", owner.Name, repo.Name)
-	resp2 := sessionOther.MakeRequest(t, req2, http.StatusNotFound)
+	tokenOther := getTokenForLoggedInUser(t, sessionOther, auth_model.AccessTokenScopeReadIssue)
+	req2 := NewRequestf(t, "GET", "/api/v1/robot/triage?owner=%s&repo=%s", owner.Name, repo.Name).
+		AddTokenAuth(tokenOther)
+	resp2 := MakeRequest(t, req2, http.StatusNotFound)
 	assert.NotNil(t, resp2)
 
 	// Test 3: Anonymous cannot access
@@ -233,10 +251,11 @@ func TestRobotAPI_Integration(t *testing.T) {
 	resp3 := MakeRequest(t, req3, http.StatusNotFound)
 	assert.NotNil(t, resp3)
 
-	// Verify response is valid JSON
-	var result map[string]interface{}
+	// Verify response is valid JSON (TriageResponse fields).
+	var result map[string]any
 	DecodeJSON(t, resp1, &result)
-	assert.Contains(t, result, "repo_id")
+	assert.Contains(t, result, "quick_ref")
+	assert.Contains(t, result, "recommendations")
 }
 
 // TestRobotAPI_NonExistentRepo tests access to non-existent repositories
@@ -271,13 +290,13 @@ func TestRobotAPI_CacheConsistency(t *testing.T) {
 
 	// Make multiple requests and verify consistency
 	numRequests := 5
-	var results []map[string]interface{}
+	var results []map[string]any
 
 	for i := 0; i < numRequests; i++ {
 		req := NewRequestf(t, "GET", "/api/v1/robot/triage?owner=%s&repo=%s", owner.Name, repo.Name)
 		resp := MakeRequest(t, req, http.StatusOK)
 
-		var result map[string]interface{}
+		var result map[string]any
 		DecodeJSON(t, resp, &result)
 		results = append(results, result)
 	}
