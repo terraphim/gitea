@@ -251,7 +251,9 @@ go build ./...
 | Markup external | `go test ./tests/integration -run TestMarkupExternal` | 5 |
 | Attachment serve | `go test ./modules/httplib/...` | 7 |
 | Generic view / CSP | `go test ./tests/integration -run TestView` | 3 |
-| Robot API regression | `go test ./tests/integration -run TestRobotAPI` | none directly; smoke after all 7 |
+| Robot API regression | `go test -tags sqlite,sqlite_unlock_notify ./tests/integration -run TestRobotAPI` (requires full fixture DB; see note) | none directly; smoke after all 7 |
+
+**Note on Robot API integration tests:** `TestRobotAPI_*` tests exist in `tests/integration/robot_security_test.go` and compile correctly with `-tags sqlite,sqlite_unlock_notify`. However, they require the full Gitea fixture database (`InitSettingsForTesting`) and cannot run without `make test-sqlite` infrastructure. Running them bare fails with a fatal panic. For Phase 3, the gate is `go build -tags sqlite,sqlite_unlock_notify ./...` succeeding plus manual endpoint smoke. Full CI wiring is tracked in issue #15.
 
 ### Final smoke (after all 7 picks)
 
@@ -275,7 +277,7 @@ make test-sqlite-migration
 - [ ] No `<<<<<<<` markers in the working tree
 - [ ] `make fmt && make vet` clean
 - [ ] OAuth2 integration tests pass (covers Critical fix)
-- [ ] No regression in Robot API smoke tests
+- [ ] No regression in Robot API: `go build -tags sqlite,sqlite_unlock_notify ./...` succeeds; manual smoke of `/api/v1/robot/triage`, `/api/v1/robot/ready`, `/api/v1/robot/graph` (full integration suite deferred to issue #15)
 - [ ] PR description references issue #12 with `Fixes #12`
 
 ---
