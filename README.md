@@ -217,6 +217,16 @@ docker build -t git.terraphim.cloud/terraphim/gitea:latest .
 docker push git.terraphim.cloud/terraphim/gitea:latest
 ```
 
+### Documentation
+
+Fork-only references for the Robot API surface and the supporting agent
+tooling:
+
+- [Robot API security model](docs/ROBOT_SECURITY.md)
+- [MCP server reference](docs/MCP_SERVER.md)
+- [Robot CLI testing guide](docs/ROBOT_CLI_TESTING.md)
+- [End-to-end testing scenario](docs/E2E_TESTING_SCENARIO.md)
+
 ## License
 
 This project is licensed under the MIT License.
