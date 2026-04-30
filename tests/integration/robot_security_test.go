@@ -51,7 +51,7 @@ func TestRobotAPI_PublicRepoAnonymous(t *testing.T) {
 	resp := MakeRequest(t, req, http.StatusOK)
 
 	// Verify response structure
-	var result map[string]interface{}
+	var result map[string]any
 	DecodeJSON(t, resp, &result)
 	assert.Contains(t, result, "repo_id")
 }
@@ -70,7 +70,7 @@ func TestRobotAPI_AuthorizedAccess(t *testing.T) {
 	resp := sessionA.MakeRequest(t, req, http.StatusOK)
 
 	// Verify response structure
-	var result map[string]interface{}
+	var result map[string]any
 	DecodeJSON(t, resp, &result)
 	assert.Contains(t, result, "repo_id")
 }
@@ -163,7 +163,7 @@ func TestRobotAPI_ReadyEndpoint(t *testing.T) {
 	req := NewRequestf(t, "GET", "/api/v1/robot/ready?owner=%s&repo=%s", owner.Name, repo.Name)
 	resp := MakeRequest(t, req, http.StatusOK)
 
-	var result map[string]interface{}
+	var result map[string]any
 	DecodeJSON(t, resp, &result)
 	assert.Contains(t, result, "repo_id")
 }
@@ -180,7 +180,7 @@ func TestRobotAPI_GraphEndpoint(t *testing.T) {
 	req := NewRequestf(t, "GET", "/api/v1/robot/graph?owner=%s&repo=%s", owner.Name, repo.Name)
 	resp := MakeRequest(t, req, http.StatusOK)
 
-	var result map[string]interface{}
+	var result map[string]any
 	DecodeJSON(t, resp, &result)
 	assert.Contains(t, result, "nodes")
 	assert.Contains(t, result, "edges")
@@ -234,7 +234,7 @@ func TestRobotAPI_Integration(t *testing.T) {
 	assert.NotNil(t, resp3)
 
 	// Verify response is valid JSON
-	var result map[string]interface{}
+	var result map[string]any
 	DecodeJSON(t, resp1, &result)
 	assert.Contains(t, result, "repo_id")
 }
@@ -271,13 +271,13 @@ func TestRobotAPI_CacheConsistency(t *testing.T) {
 
 	// Make multiple requests and verify consistency
 	numRequests := 5
-	var results []map[string]interface{}
+	var results []map[string]any
 
 	for i := 0; i < numRequests; i++ {
 		req := NewRequestf(t, "GET", "/api/v1/robot/triage?owner=%s&repo=%s", owner.Name, repo.Name)
 		resp := MakeRequest(t, req, http.StatusOK)
 
-		var result map[string]interface{}
+		var result map[string]any
 		DecodeJSON(t, resp, &result)
 		results = append(results, result)
 	}

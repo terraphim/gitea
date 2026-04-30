@@ -45,12 +45,12 @@ func (m *mockAPIContext) NotFound() {
 	m.Response.WriteHeader(http.StatusNotFound)
 }
 
-func (m *mockAPIContext) Error(status int, name string, obj interface{}) {
+func (m *mockAPIContext) Error(status int, name string, obj any) {
 	m.statusCode = status
 	m.Response.WriteHeader(status)
 }
 
-func (m *mockAPIContext) JSON(status int, obj interface{}) {
+func (m *mockAPIContext) JSON(status int, obj any) {
 	m.statusCode = status
 	m.Response.WriteHeader(status)
 }
