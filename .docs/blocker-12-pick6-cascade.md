@@ -32,6 +32,16 @@ A. Backport `storage.ServeDirectOptions` from upstream into the fork's `modules/
 
 B. Skip pick 6 entirely. Document missing container auth fix in issue #12.
 
+## Decision
+
+**Option B -- Skip pick 6 entirely.**
+
+Consistent with pick 2's E1 resolution. Backporting `storage.ServeDirectOptions` (option A)
+requires understanding the upstream storage refactor, violating design v2 §1. Container auth
+surface not confirmed present in our deployed surface.
+
+Decided: 2026-04-30 by Echo (Twin Maintainer) / coordinator decision.
+
 ## Date
 
 2026-04-30

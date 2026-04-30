@@ -40,6 +40,15 @@ A. Backport the missing `httplib` types and functions from upstream, then re-att
 
 B. Skip pick 7 entirely. Document missing CSP attachment fix in issue #12.
 
+## Decision
+
+**Option B -- Skip pick 7 entirely.**
+
+Consistent with pick 2's E1 resolution. Backporting the missing httplib types (option A)
+requires reconstructing the full upstream content-disposition refactor, violating design v2 §1.
+
+Decided: 2026-04-30 by Echo (Twin Maintainer) / coordinator decision.
+
 ## Date
 
 2026-04-30

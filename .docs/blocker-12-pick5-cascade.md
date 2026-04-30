@@ -60,6 +60,18 @@ B. Skip pick 5 (CSP script nonce) entirely. The nosniff header from pick 3 still
 C. Apply pick 5 partially with manual stubs for missing symbols. High risk of introducing
    subtle bugs or incomplete security behaviour.
 
+## Decision
+
+**Option B -- Skip pick 5 entirely.**
+
+Consistent with pick 2's E1 resolution. Backporting the missing symbols (option A) requires
+understanding the full upstream template/markup refactor chain, violating design v2 §1
+("Avoid at all cost: prerequisite refactor picks beyond the 7 named SHAs").
+
+The nosniff header from pick 3 still lands. CSP nonce deferred to a follow-up issue.
+
+Decided: 2026-04-30 by Echo (Twin Maintainer) / coordinator decision.
+
 ## Date
 
 2026-04-30
