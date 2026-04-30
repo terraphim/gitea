@@ -21,9 +21,9 @@ type PageRankCache struct {
 
 // cacheEntry stores cached PageRank scores with metadata
 type cacheEntry struct {
-	scores    map[int64]float64
-	computed  time.Time
-	repoID    int64
+	scores   map[int64]float64
+	computed time.Time
+	repoID   int64
 }
 
 // Global cache instance
@@ -143,7 +143,7 @@ func (c *PageRankCache) InvalidateAll() {
 }
 
 // GetStats returns cache statistics (for monitoring/debugging)
-func (c *PageRankCache) GetStats() (entries int, computing int) {
+func (c *PageRankCache) GetStats() (entries, computing int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries), len(c.computing)
