@@ -202,6 +202,25 @@ func TestPackageContainer(t *testing.T) {
 		})
 	})
 
+	t.Run("RequireSignIn", func(t *testing.T) {
+		defer tests.PrintCurrentTest(t)()
+
+		// Pick 6 (#37290): when sign-in is required (either via the global
+		// RequireSignInViewStrict setting or because the targeted owner is not
+		// public), the 401 must advertise BOTH the Bearer realm (for OCI clients)
+		// AND the Basic realm (for the apple `container` CLI and similar clients).
+		defer test.MockVariableValue(&setting.Service.RequireSignInViewStrict, true)()
+
+		req := NewRequest(t, "GET", setting.AppURL+"v2")
+		resp := MakeRequest(t, req, http.StatusUnauthorized)
+
+		expected := []string{
+			`Bearer realm="` + setting.AppURL + `v2/token",service="container_registry",scope="*"`,
+			`Basic realm="Gitea Container Registry"`,
+		}
+		assert.ElementsMatch(t, expected, resp.Header().Values("WWW-Authenticate"))
+	})
+
 	t.Run("DetermineSupport", func(t *testing.T) {
 		defer tests.PrintCurrentTest(t)()
 
