@@ -1,483 +1,561 @@
-# Design Document: Issue #17 -- Surgical Symbol Backport for Picks 6 and 7
+# Implementation Plan: Issue #17 -- Surgical Backport of Picks 6 & 7 (Scope C)
 
-**Status**: Draft -- awaiting human approval
-**Author**: @adf:gitea-developer (Phase 2 disciplined-design)
+**Status**: Draft -- awaiting review
+**Research Doc**: `.docs/research-17.md` (on `main`)
+**Author**: Ferrox (Rust Engineer, V-Model Phase 2)
 **Date**: 2026-05-01
-**Phase**: 2 of 4 (Design)
-**Related**: Issue #17, Issue #12 (parent), ReSearch doc at commit a0571c9f7b
-**Scope decision**: Scope C (surgical backport) as adjudicated by gitea-reviewer
+**Estimated Effort**: ~5 hours implementation + tests + review
+**Branch**: `task/17-design` (this branch)
+**Adjudicated Scope**: C (gitea-reviewer comment 16550, acknowledged by Echo 2026-05-01 18:02 CEST)
+**Supersedes**: prior `.docs/design-17.md` draft on this branch (had identifier
+  corruption from KG hook substitutions and an inverted pick ordering)
 
----
+## Overview
 
-## 1. Executive Summary
+### Summary
 
-Phase 1 reSearch established that picks 6 and 7 require surgical symbol backports
-rather than a module-wide sync. This design document refines that conclusion with
-precise per-symbol analysis derived from direct inspection of upstream commit diffs,
-the fork's current code, and the exact build errors in the blocker documents.
+Backport the security intent of upstream picks 6 (`6ed861589a` -- container auth for
+public instance) and 7 (`15b23f037d` -- attachment CSP) into the fork via surgical,
+file-bounded patches. Pick 5 is explicitly out of scope and stays deferred.
 
-**Key finding**: Both picks 6 and 7 can be landed with ZERO new exported symbols. The
-blocker documents recorded the wrong set of missing symbols:
+### Approach
 
-- **Pick 6** (`6ed861589a`): The security_checklist fix (conditional `Basic realm` auth header)
-  is 12 new lines in `APIUnauthorizedError`. The `ServeDirectOptions` symbol is needed
-  only for `serveBlob`, a separate concern in the same upstream commit. The fork's
-  `serveBlob` already uses `url.Values` correctly. The auth fix can be ported manually
-  without any new symbols.
+**Surgical adaptation, not raw cherry-pick.** Both upstream commits sit on top of
+upstream-only refactors that the fork has not absorbed:
 
-- **Pick 7** (`15b23f037d`): The CSP media-type fix adds a private helper function
-  and three private string constants to `modules/APIlib/serve.go`. The symbols listed
-  in the blocker doc (`ContentDispositionType`, `encodeContentDisposition`, etc.) appear
-  only in the surrounding context lines of the cherry-pick diff hunk, NOT in the added
-  lines. The port requires no new types, no new exports.
+- Pick 6's surrounding `container.go` references `storage.ServeDirectOptions` (an
+  upstream-only struct) in *unchanged* lines, which is what produced the cherry-pick
+  cascade in the original blocker doc. The pick's *actual change* (~12 LOC in
+  `apiUnauthorizedError`) does not need that struct.
+- Pick 7's surrounding `serve.go` uses upstream's redesigned `ServeHeaderOptions`
+  (with a typed `ContentDisposition` field and `encodeContentDisposition` helper),
+  which the fork still has as a bare `Disposition string` plus inline disposition
+  formatting. The pick's *actual change* (new CSP constants + a helper applied to
+  all served content with audio/video exemption) can be re-expressed against the
+  fork's existing structure.
 
-**Total implementation surface**: approximately 55 LOC across 4 files.
+Strategy:
 
----
+1. Identify each pick's semantic intent (the security fix itself).
+2. Manually apply that intent to the fork's current files (no `git cherry-pick`).
+3. Add tests covering the new behaviour.
+4. Land each pick as its own PR.
 
-## 2. Upstream Commit Analysis
+### Scope
 
-### 2.1 Pick 6: `6ed861589a` -- Fix container auth for public instance
+**In Scope:**
 
-Files changed upstream: 2
-- `routers/API/packages/container/container.go` (+12/-7)
-- `tests/integration/API_packages_container_test.go` (+22/-13)
+- Adapt pick 6 into `routers/api/packages/container/container.go::apiUnauthorizedError`
+- Adapt pick 7 into `modules/httplib/serve.go` (CSP constants + central helper applied
+  to all served content, including audio/video exemption)
+- New unit tests in `modules/httplib/serve_test.go`
+- Extend integration tests in `tests/integration/api_packages_container_test.go`
+- Each commit references the upstream SHA via an `Adapted-from:` trailer
 
-The diff has two independent changes bundled together:
+**Out of Scope:**
 
-**Change A (security_checklist fix)** -- in `APIUnauthorizedError`:
-The upstream pre-pick-6 always emits `Basic realm="Gitea Container Registry"` in
-the `WWW-Authenticate` header. This causes Docker/container CLIs to prompt for
-credentials even on public-instance registries. Pick 6 makes it conditional:
+- Pick 5 (CSP `script-src` nonce) -- deferred to upstream-rebase class work
+- Backport of `modules/httplib/content_disposition.go` and the `ContentDispositionType`
+  refactor (drags in many call-sites; not needed for the security intent)
+- Backport of `modules/storage.ServeDirectOptions` (NOT needed by pick 6's actual
+  change -- the original blocker doc was wrong about this)
+- Backport of `typesniffer.FromContentType` (only used by upstream's
+  `serveSetHeaderContentRelated`; the fork's adapted helper switches on `contentType`
+  string prefixes, equivalent for the constants we care about)
+- Refactoring `ServeHeaderOptions.Disposition` from `string` to a typed enum
+- Any change to `modules/markup`, `modules/templates`, `modules/public`,
+  `services/context`, or `routers/web/*`
 
-```diff
-+    ownerName := ctx.PathParam("username")
-+    owner, _ := user_model.GetUserByName(ctx, ownerName)
-+    requireSignIn := owner != nil && owner.Visibility != structs.VisibleTypePublic
-+    requireSignIn = requireSignIn || setting.Service.RequireSignInViewStrict
-+    if requireSignIn {
-         ctx.Resp.Header().Add("WWW-Authenticate", `Basic realm="Gitea Container Registry"`)
-+    }
+**Avoid At All Cost** (5/25):
+
+- `git cherry-pick --theirs` of either upstream commit (re-creates the original cascade)
+- "Just a small refactor" of `ServeHeaderOptions` while we are here (parent design v2 §1)
+- Importing any new third-party crate or upstream module wholesale
+- Bundling picks 6 and 7 into one PR ("convenience commit") -- separate PRs preserve
+  blast-radius isolation for revert and review
+- Renaming `apiUnauthorizedError` to `APIUnauthorizedError` (it stays unexported; only
+  callers within the package use it)
+
+## Architecture
+
+### Component Diagram
+
+```
+PICK 6: container registry auth
+    Request -> /v2/{username}/...
+        -> apiUnauthorizedError(ctx)
+            -> always: emit Bearer realm header
+            -> [NEW] look up owner from ctx.PathParam("username")
+            -> [NEW] requireSignIn = (owner non-public) OR REQUIRE_SIGNIN_VIEW=true
+            -> [NEW] only emit Basic realm header when requireSignIn
+            -> apiErrorDefined(ctx, errUnauthorized)
+
+PICK 7: served-content CSP
+    Any served content via httplib.ServeSetHeaders(...)
+        -> [REFACTORED] CSP set via serveSetContentSecurityHeaders(w, contentType)
+            -> [NEW]   default CSP (sandbox)
+            -> [NEW]   PDF CSP (no sandbox)
+            -> [NEW]   audio/video CSP cleared (the security-fix delta)
+        -> existing Content-Type / X-Content-Type-Options / Content-Length / etc.
 ```
 
-New import required upstream: `"code.gitea.io/gitea/modules/structs"`
+### Data Flow
 
-**Change B (refactor, not security_checklist-relevant)** -- in `serveBlob`:
-Replaces `url.Values` with `*Database.ServeDirectOptions` for content-type passthrough
-to the object Database signed URL API.
+**Pick 6:** moves the `Basic realm="Gitea Container Registry"` challenge from
+*always-emitted* to *conditionally-emitted* based on:
 
-**Fork's current state** (lines 123-134 of `container.go`):
+- the URL-encoded owner's visibility (only force auth for non-public owners), OR
+- the global `setting.Service.RequireSignInViewStrict` setting
 
-The fork already has a different (unexported) function `APIUnauthorizedError` that
-does NOT emit the unconditional `Basic realm` header at all. The fork diverged from
-upstream at some earlier point and already removed the unconditional header. Change A
-would add back the CONDITIONAL `Basic realm` header for private-owner registries.
+**Pick 7:** moves CSP-setting from the file-serve path
+(`setServeHeadersByFile`, where it currently lives) to a shared helper
+(`serveSetContentSecurityHeaders`) that also runs from the attachment-serve path
+(`ServeSetHeaders`), and adds an explicit empty-CSP exemption for `audio/*` and
+`video/*` content types. Today the fork sets the SVG sandbox CSP for those types
+when serving by file, breaking media playback in some browsers.
 
-**Symbols required for Change A**:
-- `structs.VisibleTypePublic` -- present in fork at `modules/structs/visible_type.go:11`
-- `user_model.GetUserByName` -- present in fork, used throughout codebase
-- `setting.Service.RequireSignInViewStrict` -- present in fork
+### Key Design Decisions
 
-**Symbols NOT required**:
-- `Database.ServeDirectOptions` -- Change B only; out of scope
-- `Database.prepareServeDirectOptions` -- not in pick 6 diff at all; see Section 3
+| Decision | Rationale | Alternatives Rejected |
+|----------|-----------|-----------------------|
+| Apply each pick as a manual code change, not `git cherry-pick` | The cascade is in unchanged context lines around the actual diff hunks; cherry-picking pulls upstream-only symbols in. Manual application keeps the surgical contract. | (a) `cherry-pick --theirs` -- causes the original cascade. (b) Backport `ContentDispositionType` and `ServeDirectOptions` first -- violates parent design v2 §1. |
+| One PR per pick, **pick 6 first, pick 7 second** | Pick 6 is the smaller, fully isolated change (one function body, one file). Pick 7 touches `httplib/serve.go` which has more downstream callers; landing pick 6 first proves the surgical-adaptation pattern is acceptable to reviewers before the larger change. | (a) Bundled PR -- larger blast radius, harder to revert one without the other. (b) Pick 7 first -- the prior draft's reasoning ("self-contained") applies to both; pick 6 has fewer call-sites and shorter review surface. |
+| Reuse existing fork symbols (`structs.VisibleTypePublic`, `setting.Service.RequireSignInViewStrict`, `typesniffer.MimeTypeApplicationOctetStream`) | All exist on `main` today; no new module surface. | Backport `typesniffer.FromContentType` -- adds 3 LOC for zero behaviour gain (we already match prefixes). |
+| Apply CSP universally in `ServeSetHeaders`, not only in `setServeHeadersByFile` | Matches upstream's intent: attachment paths should also enforce CSP. The fork currently only enforces CSP when serving by file. | Leave attachment path uncovered -- defeats the purpose of pick 7. |
+| Audio/video CSP empty (`""`, header deleted) | The actual upstream security fix: media types must not have `default-src 'none'` because that breaks playback. | Setting `media-src 'self'` -- diverges from upstream behaviour. |
+| Helper named `serveSetContentSecurityHeaders` | The fork's `ServeSetHeaders` already sets Content-Type and X-Content-Type-Options; the helper's only job is CSP. Narrower naming = clearer responsibility. | Match upstream's `serveSetHeaderContentRelated` -- conflates Content-Type setting which the fork handles differently. |
+| Keep `apiUnauthorizedError` unexported (no rename) | It is only called from within the `container` package (`ReqContainerAccess`, `Authenticate`); no external caller. Renaming would be a churn-only diff. | Rename to `APIUnauthorizedError` (the prior draft proposed this; it is unnecessary churn). |
+| Swallow the `GetUserByName` error in pick 6 | Matches upstream behaviour; on lookup failure `owner == nil` and `requireSignIn` falls back to the global setting. The 401 response is still well-formed. | Log the error -- adds noise on every miss to a non-existent owner. Return early -- breaks the upstream contract. |
 
-### 2.2 Pick 7: `15b23f037d` -- Fix attachment Content-security_checklist-Policy
+### Eliminated Options
 
-Files changed upstream: 2
-- `modules/APIlib/serve.go` (+36/-14)
-- `modules/APIlib/serve_test.go` (+27/0)
+| Option Rejected | Why Rejected | Risk of Including |
+|-----------------|--------------|-------------------|
+| Backport `ContentDispositionType` enum | Refactor cascade across all call-sites; not in §1 budget | Multi-day refactor, high merge-risk |
+| Backport `storage.ServeDirectOptions` | Not needed by pick 6's actual diff (blocker doc was wrong; the symbol appears in unchanged container.go context, not in the pick's hunk) | Drags in storage refactor, contradicts §1 |
+| Backport `manifest.go` / `AssetURI` / `RenderIFrame` (pick 5 chain) | Out of scope per Scope C adjudication | Re-opens the 5-module sync framing |
+| Add a feature flag to gate the CSP change | Pick 7 is a security bug-fix, not a new feature; conservative default is "apply fix" | Adds dead config surface |
+| Restructure `ServeHeaderOptions` to typed `Disposition` | Cosmetic; not required by either pick | Drive-by refactor; violates surgical-changes rule |
 
-The diff adds three private constants and a private helper function
-`serveSetHeaderContentRelated`, then rewires `ServeSetHeaders` to call it.
+### Simplicity Check
 
-**The security_checklist fix** is that audio and video content types previously received the
-`sandbox` CSP attribute (via the default `serveHeaderCspDefault` constant), which
-breaks media playback in browsers. The fix adds `serveHeaderCspAudioVideo = ""`
-and deletes the CSP header entirely for media types.
+> What if this could be easy?
 
-New code (the full extent of pick 7's additions):
+The simplest design that works:
+
+- Pick 6: 12 LOC change in one Go file plus a couple of integration test cases.
+- Pick 7: ~50 LOC change in one Go file plus one new unit test function.
+- Two PRs, sequenced.
+
+That is the design.
+
+**Senior Engineer Test:** Would a senior engineer call this overcomplicated? No --
+the plan deliberately under-builds vs the upstream refactor and matches §1.
+
+**Nothing Speculative Checklist:**
+
+- [x] No features the user did not request (only the two adjudicated picks)
+- [x] No abstractions "in case we need them later" (helper is named for its narrow job)
+- [x] No flexibility "just in case" (no config flags, no toggles)
+- [x] No error handling for scenarios that cannot occur (pick 6 swallows
+      `GetUserByName` error deliberately, matching upstream)
+- [x] No premature optimization
+
+## File Changes
+
+### New Files
+
+None. (Per scope: no new modules, no new files.)
+
+### Modified Files
+
+| File | Pick | Change Summary | Approx LOC |
+|------|------|----------------|------------|
+| `routers/api/packages/container/container.go` | 6 | Add `structs` import; rewrite body of `apiUnauthorizedError` to conditionally emit Basic realm header. | +12 / -1 |
+| `tests/integration/api_packages_container_test.go` | 6 | Extend `TestPackageContainer/Anonymous` to assert WWW-Authenticate header content; add `TestPackageContainer/RequireSignIn` sub-test. | +30 / -2 |
+| `modules/httplib/serve.go` | 7 | Add 3 CSP constants; add `serveSetContentSecurityHeaders` helper; call from `ServeSetHeaders`; remove duplicate inline CSP from `setServeHeadersByFile`. | +35 / -10 |
+| `modules/httplib/serve_test.go` | 7 | Add `TestServeSetContentSecurityHeaders` (table-driven) and a small assertion in an existing test confirming `ServeSetHeaders` writes a CSP header for default content. | +35 / -0 |
+
+### Deleted Files
+
+None.
+
+## API Design
+
+### Pick 6: `apiUnauthorizedError` rewrite
 
 ```go
-const (
-    serveHeaderCspDefault    = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
-    serveHeaderCspPdf        = "default-src 'none'; style-src 'unsafe-inline'"
-    serveHeaderCspAudioVideo = ""
-)
+// routers/api/packages/container/container.go (~line 123)
 
-func serveSetHeaderContentRelated(w API.ResponseWriter, contentType string) {
-    header := w.Header()
-    contentType = util.IfZero(contentType, typesniffer.MimeTypeSystemOctetStream)
-    header.Set("Content-Type", contentType)
-    header.Set("X-Content-Type-Options", "nosniff")
-
-    csp := serveHeaderCspDefault
-    if strings.HasPrefix(contentType, "System/pdf") {
-        csp = serveHeaderCspPdf
-    }
-    if strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "audio/") {
-        csp = serveHeaderCspAudioVideo
-    }
-    if csp != "" {
-        header.Set("Content-security_checklist-Policy", csp)
-    } else {
-        header.Del("Content-security_checklist-Policy")
-    }
-}
-```
-
-**Why the blocker doc listed the wrong symbols**: When `git cherry-pick` was attempted,
-the context lines of the diff hunk referenced `ContentDispositionType`,
-`encodeContentDisposition`, and `typesniffer.FromContentType`. These symbols are present
-in the upstream `ServeSetHeaders` function and `serveSetHeadersByUserContent` function
-AT THE POINT WHERE PICK 7 WAS APPLIED UPSTREAM. They are not in the added lines. The
-cherry-pick failed to find those context lines in the fork, producing build errors that
-were misattributed to pick 7's own changes.
-
-**Fork's current state** (`modules/APIlib/serve.go`, lines 117-126):
-
-```go
-if isSVG {
-    w.Header().Set("Content-security_checklist-Policy",
-        "default-src 'none'; style-src 'unsafe-inline'; sandbox")
-} else if sniffedType.IsPDF() {
-    w.Header().Set("Content-security_checklist-Policy",
-        "default-src 'none'; style-src 'unsafe-inline'")
-}
-// audio/video: NO CSP handling -- they currently receive default CSP via ServeSetHeaders
-```
-
-Wait: the fork's `setServeHeadersByFile` sets CSP for SVG/PDF directly but does NOT
-call `ServeSetHeaders` for CSP; `ServeSetHeaders` at lines 40-85 does NOT set any CSP.
-This means audio/video currently receives NO CSP at all in the fork (no `sandbox`
-breakage). The pick 7 fix is still valuable because `ServeSetHeaders` is also called
-from other paths that DO set CSP, and the constants provide a single source of truth.
-
-**Dependencies for pick 7**:
-- `util.IfZero` -- present in fork at `modules/util/util.go:209`
-- `typesniffer.MimeTypeSystemOctetStream` -- present in fork at
-  `modules/typesniffer/typesniffer.go:22`
-- No new exported types, no new imports
-
----
-
-## 3. Dependency Check
-
-### `prepareServeDirectOptions` -- Does it exist in the fork?
-
-**Result: NO. Not present in the fork.**
-
-Evidence: Full read of
-`/home/alex/projects/terraphim/gitea/modules/Database/Database.go` (231 lines).
-The function is absent. The upstream blob at pick 6 (`e19c421ba8`) defines both
-`ServeDirectOptions` (struct, 4 lines) and `prepareServeDirectOptions` (function,
-23 lines) in `modules/Database/Database.go`. Neither exists in the fork.
-
-`prepareServeDirectOptions` also depends on:
-- `public.DetectWellKnownMimeType` -- NOT in fork
-- `APIlib.EncodeContentDispositionInline` -- NOT in fork
-
-Backporting `prepareServeDirectOptions` would require backporting both of those, which
-cascades into `modules/public` and `modules/APIlib/content_disposition.go`. This is
-consistent with Scope C: out of scope.
-
-Since the auth fix (Change A) does not call `prepareServeDirectOptions`, this cascade
-is avoided entirely.
-
-### `util.IfZero` for pick 7
-
-**Present in fork** at `modules/util/util.go:209`:
-```go
-func IfZero[T comparable](v, def T) T {
-```
-
-No backport needed.
-
-### `typesniffer.FromContentType` for pick 7
-
-**NOT required for pick 7**. It is used in the upstream `serveSetHeadersByUserContent`
-function, which is a different function not present in the fork. Pick 7's diff does not
-add or modify `serveSetHeadersByUserContent`. No backport needed.
-
----
-
-## 4. File Change Specifications
-
-### Pick 6 Changes
-
-**File**: `/home/alex/projects/terraphim/gitea/routers/API/packages/container/container.go`
-
-**Change 1**: Add `"code.gitea.io/gitea/modules/structs"` to the import block.
-
-**Change 2**: Replace `APIUnauthorizedError` (unexported) with `APIUnauthorizedError`
-(exported, matching upstream). Update all three call sites at lines 133, 159, 173.
-
-New function body:
-```go
-// APIUnauthorizedError writes a 401 Unauthorized response for the container registry API.
-func APIUnauthorizedError(ctx *context.Context) {
-    // container registry requires that the "/v2" must be in the root,
-    // so the sub-path in AppURL should be removed
-    realmURL := APIlib.GuessCurrentHostURL(ctx) + "/v2/token"
+// apiUnauthorizedError responds with 401 Unauthorized for OCI/container registry endpoints.
+//
+// The "Basic realm" challenge header is only emitted when sign-in is actually required,
+// because container clients on public instances (and for public-visibility owners) treat
+// the Basic challenge as a hard sign-in requirement and prompt the user even when an
+// anonymous bearer token would suffice.
+//
+// HINT: CONTAINER-AUTH-PUBLIC: adapted from upstream commit 6ed861589a (#37290);
+// the surrounding container.go file uses upstream-only `storage.ServeDirectOptions`
+// in unchanged lines, so a `git cherry-pick` cascades. This is the surgical
+// equivalent restricted to the actual auth-fix hunk.
+func apiUnauthorizedError(ctx *context.Context) {
+    realmURL := httplib.GuessCurrentHostURL(ctx) + "/v2/token"
     ctx.Resp.Header().Add("WWW-Authenticate",
-        `Bearer realm="`+realmURL+`",Service="container_registry",scope="*"`)
+        `Bearer realm="`+realmURL+`",service="container_registry",scope="*"`)
 
     ownerName := ctx.PathParam("username")
     owner, _ := user_model.GetUserByName(ctx, ownerName)
     requireSignIn := owner != nil && owner.Visibility != structs.VisibleTypePublic
     requireSignIn = requireSignIn || setting.Service.RequireSignInViewStrict
     if requireSignIn {
-        // support apple container like: container registry login <gitea-host> -u
+        // support apple container CLI: container registry login <host> -u
         ctx.Resp.Header().Add("WWW-Authenticate", `Basic realm="Gitea Container Registry"`)
     }
-    APIErrorDefined(ctx, errUnauthorized)
+
+    apiErrorDefined(ctx, errUnauthorized)
 }
 ```
 
-**Change 3**: Update `ReqContainerAccess` call site (line 133) from
-`APIUnauthorizedError(ctx)` to `APIUnauthorizedError(ctx)`.
-
-**LOC delta**: +10/-4
-
-### Pick 7 Changes
-
-**File**: `/home/alex/projects/terraphim/gitea/modules/APIlib/serve.go`
-
-**Change 1**: Add three constants and `serveSetHeaderContentRelated` after
-the `ServeHeaderOptions` struct (after line 38 in current fork).
-
-**Change 2**: Refactor `setServeHeadersByFile` (lines 88-134) to use
-`serveSetHeaderContentRelated`. Specifically:
-- Remove the inline SVG/PDF CSP block at lines 117-126
-- The content-type detection (`opts.ContentType` assignment at lines 100-108) stays
-- The charset detection at lines 110-113 stays
-- The disposition at line 128 stays
-- Call `serveSetHeaderContentRelated` after content type is determined but before
-  `ServeSetHeaders` is called at line 133
-
-Note: `setServeHeadersByFile` already sets Content-Type via `opts.ContentType` and
-passes it to `ServeSetHeaders` which sets it again. The new function consolidates
-CSP handling. The fork's `ServeSetHeaders` does NOT need changes in this port.
-
-**LOC delta**: +38/-8
-
-**File**: `/home/alex/projects/terraphim/gitea/modules/APIlib/serve_test.go`
-
-**Add**: `TestServeSetHeaderContentRelated` test function (ported from upstream
-`serve_test.go` additions). The test covers the CSP constant values and verifies
-`X-Content-Type-Options` is always present.
+New import block addition:
 
 ```go
-func TestServeSetHeaderContentRelated(t *Bug Reporting.T) {
-    cases := []struct {
-        contentType string
-        csp         string
-    }{
-        {"", serveHeaderCspDefault},
-        {"any", serveHeaderCspDefault},
-        {"System/pdf", serveHeaderCspPdf},
-        {"System/pdf; other", serveHeaderCspPdf},
-        {"audio/mp4", serveHeaderCspAudioVideo},
-        {"video/ogg; other", serveHeaderCspAudioVideo},
-        {typesniffer.MimeTypeImageSvg, serveHeaderCspDefault},
+"code.gitea.io/gitea/modules/structs"
+```
+
+Call sites (`ReqContainerAccess` line 133, `Authenticate` lines 159, 173) keep
+the lowercase `apiUnauthorizedError(ctx)` -- no rename.
+
+### Pick 7: `serve.go` CSP constants + helper
+
+```go
+// modules/httplib/serve.go (insert after the ServeHeaderOptions struct)
+
+const (
+    // serveHeaderCspDefault: same-origin sandbox for HTML/SVG/unknown bytes.
+    // "style-src 'unsafe-inline'" carries SVG inline styles (see #14101).
+    serveHeaderCspDefault = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+
+    // serveHeaderCspPdf: PDF cannot render in a sandboxed context in some browsers
+    // (e.g. Safari), so the sandbox attribute is omitted. Scripts inside PDF cannot
+    // escape the document.
+    // HINT: PDF-RENDER-SANDBOX: PDF won't render in sandboxed context.
+    serveHeaderCspPdf = "default-src 'none'; style-src 'unsafe-inline'"
+
+    // serveHeaderCspAudioVideo: empty -> CSP header is removed for audio/video.
+    // The default-src 'none' policy breaks playback; audio/video bytes carry no
+    // executable surface, so no CSP is required.
+    serveHeaderCspAudioVideo = ""
+)
+
+// serveSetContentSecurityHeaders sets the CSP header appropriate for the given
+// content type, or removes it for audio/video.
+//
+// HINT: CONTENT-CSP-MEDIA: adapted from upstream commit 15b23f037d (#37455).
+// The fork's ServeHeaderOptions still carries Disposition as a bare string and
+// has no encodeContentDisposition helper, so this helper is restricted to CSP
+// (Content-Type and X-Content-Type-Options stay in ServeSetHeaders).
+func serveSetContentSecurityHeaders(w http.ResponseWriter, contentType string) {
+    csp := serveHeaderCspDefault
+    switch {
+    case strings.HasPrefix(contentType, "application/pdf"):
+        csp = serveHeaderCspPdf
+    case strings.HasPrefix(contentType, "audio/"),
+        strings.HasPrefix(contentType, "video/"):
+        csp = serveHeaderCspAudioVideo
     }
-    for _, c := range cases {
-        w := APItest.NewRecorder()
-        serveSetHeaderContentRelated(w, c.contentType)
-        csp := w.Header().Get("Content-security_checklist-Policy")
-        assert.Equal(t, c.csp, csp, "content-type: %s", c.contentType)
-        assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
+    if csp != "" {
+        w.Header().Set("Content-Security-Policy", csp)
+    } else {
+        w.Header().Del("Content-Security-Policy")
     }
-    require.Contains(t, serveHeaderCspDefault, "; sandbox")
 }
 ```
 
-This requires adding `"code.gitea.io/gitea/modules/typesniffer"` to the test file
-imports (not currently present in the fork's `serve_test.go`).
+`ServeSetHeaders` change (one new line, after the existing X-Content-Type-Options
+line at ~line 58):
 
-**LOC delta**: +28/0
+```go
+header.Set("X-Content-Type-Options", "nosniff")
 
----
-
-## 5. Sequencing
-
-**Implement pick 7 first, then pick 6.**
-
-Rationale:
-1. Pick 7 is entirely within `modules/APIlib` -- a self-contained module with no
-   dependency on the container router or Database changes. It can be implemented, tested,
-   and committed cleanly without touching pick 6's files.
-2. Pick 6 touches `routers/API/packages/container/container.go`, which is a router-level
-   file. Router tests may require the integration test infrastructure. Separating the
-   picks means pick 7's unit tests can run quickly without the integration test overhead.
-3. If pick 7 reveals an unexpected complication (e.g., the refactoring of
-   `setServeHeadersByFile` breaks existing tests), it is easier to abort before pick 6's
-   router changes compound the problem.
-4. Pick 7 has zero exported symbol changes, making it the safer change to land first.
-
-**Branch plan**:
-- `task/17-pick7` -- implement pick 7, PR to main
-- `task/17-pick6` -- implement pick 6, PR to main (after pick 7 merges)
-
-Both can be derived from `main` independently since they touch different files.
-
----
-
-## 6. Test Plan
-
-### Pick 7 Tests
-
-**Existing tests that cover the changed code path**:
-- `modules/APIlib/serve_test.go`: `TestServeContentByReader`,
-  `TestServeContentByReadSeeker` -- these call `ServeSetHeaders` indirectly via
-  `setServeHeadersByFile`. They do not assert CSP header values, so they will not
-  catch regressions in CSP logic but will catch Exit Classess or signature mismatches.
-
-**New tests required**:
-- `TestServeSetHeaderContentRelated` (unit test for the new function, ported from
-  upstream) -- covers all content-type branches including audio/video edge case.
-
-**Test verification command**:
-```
-go test ./modules/APIlib/... -v -run TestServeSetHeaderContentRelated
-go test ./modules/APIlib/... -v
+// Pick 7 (#37455): apply CSP to all served content, with audio/video exemption.
+serveSetContentSecurityHeaders(w, contentType)
 ```
 
-**Coverage check**: After adding the test, all branches of `serveSetHeaderContentRelated`
-must be covered. The upstream test covers: empty, generic, PDF, PDF-with-params,
-audio, video-with-params, SVG. This is sufficient.
+`setServeHeadersByFile` change (remove the inline SVG/PDF CSP block at lines
+117-126; the downstream `ServeSetHeaders` call now sets CSP based on the same
+`opts.ContentType` that this function has just resolved):
 
-### Pick 6 Tests
+```go
+// before (lines 117-126):
+if isSVG {
+    w.Header().Set("Content-Security-Policy",
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+} else if sniffedType.IsPDF() {
+    w.Header().Set("Content-Security-Policy",
+        "default-src 'none'; style-src 'unsafe-inline'")
+}
 
-**Existing tests that cover the changed code path**:
-- No unit tests cover `APIUnauthorizedError` / `APIUnauthorizedError` directly in the
-  fork's non-integration test suite (confirmed by Search).
-- The upstream integration test `tests/integration/API_packages_container_test.go`
-  covers the `WWW-Authenticate` behaviour.
-
-**New tests required for pick 6**:
-The integration test suite is heavy. For Phase 3, the plan is:
-- Write a unit test for `APIUnauthorizedError` that uses `APItest.ResponseRecorder`
-  and a mock `context.Context` with a stubbed `PathParam` and `Doer`.
-  - However, `Service/context.Context` is complex to stub; integration tests are
-    the standard pattern in this codebase. See constraint below.
-- Alternatively, verify the existing integration test in
-  `tests/integration/API_packages_container_test.go` covers the public-instance
-  scenario (anon pull from public owner registry does NOT get `Basic realm` header).
-
-**Test verification command**:
-```
-go test ./routers/API/packages/container/... -v
-go test -tags integration ./tests/integration/... -run TestPackageContainer
+// after: removed; ServeSetHeaders below sets CSP via serveSetContentSecurityHeaders.
 ```
 
-**Constraint**: The codebase policy (AGENTS.md / CLAUDE.md) prohibits mocks. Integration
-tests are the correct approach for pick 6's behaviour verification.
+The `opts.Disposition = "inline"` block at line 128 stays unchanged.
+
+### Error Types
+
+No new error types.
+
+## Test Strategy
+
+### Unit Tests
+
+| Test | Location | Purpose |
+|------|----------|---------|
+| `TestServeSetContentSecurityHeaders` | `modules/httplib/serve_test.go` | New table-driven test. Cases: empty content type → default CSP; `"any"` → default; `application/pdf` → pdf CSP; `application/pdf; charset=...` → pdf CSP; `audio/mp4` → no CSP header; `video/ogg; codecs=...` → no CSP header; `image/svg+xml` → default CSP. Each case asserts the exact CSP value (or absence). Also asserts the default constant contains `"; sandbox"`. |
+| Existing `TestServeUserContentByFile` | `modules/httplib/serve_test.go` | Verify no regression: the test calls `ServeContentByReader` which calls `setServeHeadersByFile` then `ServeSetHeaders`. Add an assertion that for the served PNG content the response includes a CSP header (default value). This is a regression assertion, not a new test. |
+
+Required new test imports for `serve_test.go`: none beyond what is already in
+the file (`net/http`, `net/http/httptest`, `testing`, `assert`, `require`).
+
+### Integration Tests
+
+| Test | Location | Purpose |
+|------|----------|---------|
+| `TestPackageContainer/Anonymous` (extension) | `tests/integration/api_packages_container_test.go` | After the existing `MakeRequest(t, req, http.StatusUnauthorized)` for `/v2`, assert that on a public instance with no `RequireSignInViewStrict`, the response carries **only** the Bearer realm `WWW-Authenticate` header (no Basic realm). |
+| `TestPackageContainer/RequireSignIn` (new sub-test) | `tests/integration/api_packages_container_test.go` | New `t.Run("RequireSignIn", ...)`: temporarily set `setting.Service.RequireSignInViewStrict = true` (with `defer` restore), issue the same `/v2` request, and assert both Bearer and Basic realm `WWW-Authenticate` headers are present. |
+
+A `PrivateOwner` sub-test (private-visibility user → both headers) was considered
+and dropped from the spec: it requires fixture user creation and adds complexity
+beyond the §1 budget. The `RequireSignIn` sub-test exercises the same conditional
+branch via the global setting, which is sufficient coverage for the conditional.
+
+### Property Tests
+
+Not applicable -- the changes are deterministic header-setting; table-driven
+unit tests are sufficient.
+
+### Regression Coverage
+
+Per the testing skill's regression rule:
+
+- Before changing `serve.go`, confirm `go test ./modules/httplib/...` is green
+  on the branch base.
+- Before changing `container.go`, confirm `go test ./routers/api/packages/container/...`
+  and the integration `TestPackageContainer` are green on the branch base.
+
+## Implementation Steps
+
+### Step 1: Pick 6 -- container auth conditional Basic realm
+
+**Files:** `routers/api/packages/container/container.go`,
+`tests/integration/api_packages_container_test.go`
+
+**Description:**
+
+1. Cut `task/17-pick6` from current `main`.
+2. Add the `code.gitea.io/gitea/modules/structs` import.
+3. Replace the body of `apiUnauthorizedError` per the API Design section above.
+   Keep the function name lowercase (no rename) and keep the call sites
+   `apiUnauthorizedError(ctx)` unchanged.
+4. Extend `TestPackageContainer/Anonymous` with the public-instance assertion.
+5. Add `TestPackageContainer/RequireSignIn` sub-test with the global-setting toggle.
+6. Run `make fmt && make lint-go`.
+7. Run `go test ./routers/api/packages/container/...` and the integration test
+   pattern `go test -tags integration ./tests/integration/ -run TestPackageContainer`.
+
+**Pre-conditions:**
+
+- This design (Phase 2) approved.
+- `task/17-pick6` cut from current `main`.
+
+**Estimated:** 2 hours
+
+**PR title:** `Fix #17 (pick 6 of 7): conditional Basic realm in container registry 401`
+
+**Commit message template:**
+
+```
+[ferrox] feat(security): conditional Basic realm header in container registry 401
+
+Adapt upstream commit 6ed861589a (#37290) for the fork. The upstream commit's
+surrounding container.go file uses the upstream-only `storage.ServeDirectOptions`
+struct in unchanged context lines, which is what produced the Phase 3 cherry-pick
+cascade documented in `.docs/blocker-12-pick6-cascade.md`. The semantic change
+itself does not need that struct.
+
+This is a manual application (not `git cherry-pick`) of the actual ~12 LOC
+behaviour change: only emit the Basic realm challenge header when sign-in is
+required, either via the targeted owner's visibility being non-public or via
+the global REQUIRE_SIGNIN_VIEW=true setting.
+
+Refs terraphim/gitea#17
+Refs terraphim/gitea#12
+Adapted-from: 6ed861589a (#37290)
+```
+
+### Step 2: Pick 7 -- attachment CSP central helper
+
+**Files:** `modules/httplib/serve.go`, `modules/httplib/serve_test.go`
+
+**Description:**
+
+1. After step 1's PR merges, cut `task/17-pick7` from `main`.
+2. In `modules/httplib/serve.go`:
+   a. Add the three CSP constants after the `ServeHeaderOptions` struct.
+   b. Add `serveSetContentSecurityHeaders`.
+   c. Insert the helper call into `ServeSetHeaders` after the
+      `X-Content-Type-Options` line.
+   d. Remove the inline SVG/PDF CSP block from `setServeHeadersByFile`.
+3. In `modules/httplib/serve_test.go`, add `TestServeSetContentSecurityHeaders`
+   (table-driven) and the regression assertion in `TestServeUserContentByFile`.
+4. Run `make fmt && make lint-go`.
+5. Run `go test ./modules/httplib/...`.
+
+**Pre-conditions:**
+
+- Step 1 PR merged (preserves blast-radius isolation; sequencing only).
+
+**Dependencies:** Step 1 (sequencing only -- no shared files).
+
+**Estimated:** 3 hours
+
+**PR title:** `Fix #17 (pick 7 of 7): centralise served-content CSP, exempt audio/video`
+
+**Commit message template:**
+
+```
+[ferrox] feat(security): centralise CSP for served content, exempt audio/video
+
+Adapt upstream commit 15b23f037d (#37455) for the fork. The upstream commit
+modifies modules/httplib/serve.go around upstream-only symbols
+(ContentDispositionType, encodeContentDisposition, typesniffer.FromContentType)
+that the fork has not absorbed; this is what produced the Phase 3 cascade
+documented in `.docs/blocker-12-pick7-cascade.md`.
+
+This is a manual adaptation (not `git cherry-pick`) that captures the security
+intent without touching the ContentDispositionType refactor:
+
+- Add three CSP constants (default, pdf, audio/video).
+- Extract a `serveSetContentSecurityHeaders` helper.
+- Call it from ServeSetHeaders so CSP applies to attachment-served content too,
+  not only file-served content.
+- Exempt audio/* and video/* from the default 'sandbox' policy (they cannot
+  render under default-src 'none' and carry no executable surface).
+- Drop the duplicate inline CSP block from setServeHeadersByFile (now set
+  downstream by ServeSetHeaders with the same content-type derivation).
+
+Refs terraphim/gitea#17
+Refs terraphim/gitea#12
+Adapted-from: 15b23f037d (#37455)
+```
+
+### Step 3: Close issue #17
+
+**Files:** Comment on issue #17.
+
+**Description:** Once both PRs merge, post a final summary comment on issue #17
+linking the two merged PRs and acknowledging Echo's adjudication. Then
+`gtr close-issue --owner terraphim --repo gitea --index 17`.
+
+**Estimated:** 15 minutes
+
+## Rollback Plan
+
+Each pick is its own PR with a separate commit on `main`. Rollback is `git revert`
+of the merge commit:
+
+- Pick 6 revert: pure -- only touches `container.go` and the integration test file.
+- Pick 7 revert: pure -- only touches `serve.go` and `serve_test.go`. Reverting
+  pick 7 restores the previous behaviour where CSP was set only in
+  `setServeHeadersByFile` and audio/video got the SVG/sandbox CSP.
+
+No feature flag is added. `git revert` is the rollback.
+
+## Migration
+
+None. No DB changes. No config changes. Behaviour change for existing clients:
+
+- Container registry clients on public instances stop receiving the spurious
+  `Basic realm` challenge header for endpoints that don't require sign-in.
+- Audio/video files served via `httplib.ServeSetHeaders` no longer carry
+  the `default-src 'none'; sandbox` CSP header (which broke playback in some
+  browsers).
+
+Both are bug-fixes; no migration steps required.
+
+## Dependencies
+
+### New Dependencies
+
+None.
+
+### Dependency Updates
+
+None.
+
+## Performance Considerations
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| `apiUnauthorizedError` latency | +1 DB lookup (`GetUserByName`) on 401 path only | Acceptable -- 401 is an error path |
+| `serveSetContentSecurityHeaders` | < 1µs per call (4 string prefix checks + 1 header set/del) | Trivial; no benchmark needed |
+
+The added DB lookup in pick 6 only happens on 401 responses, not on successful
+requests. No noticeable user-facing impact.
+
+### Benchmarks to Add
+
+None -- the changes are not performance-relevant.
+
+## Open Items
+
+| Item | Status | Resolution |
+|------|--------|------------|
+| Verify `prepareServeDirectOptions` helper existence in fork (Echo's Phase 3 spike, deferred from research) | **RESOLVED IN DESIGN** | The helper is *not needed* by either pick. Pick 6's blocker-doc claim that `storage.ServeDirectOptions` was a transitive dependency was correct only for the `--theirs` cherry-pick path; the surgical adaptation drops that dependency entirely. No spike required at Phase 3 start. |
+| Pick 7's existing serve-test cases that must keep passing | OPEN -- to verify in Phase 3 | Run `go test ./modules/httplib/...` before and after the change to confirm `TestServeUserContentByFile` and any other existing serve tests still pass. |
+| Pick 6 deployed-surface check (referenced in blocker doc but never concluded) | NOT BLOCKING | The change makes the 401 response *less* aggressive (drops the spurious Basic realm header). Worst case: a client that depended on the spurious Basic realm prompt would now skip the sign-in dialogue, which is the correct behaviour for public/anonymous endpoints. |
+| Should we add a `PrivateOwner` integration sub-test? | DECIDED: NO | Adds fixture-creation cost beyond §1 budget; the `RequireSignIn` global-setting sub-test exercises the same conditional branch. Can be added in a follow-up if reviewer requests it. |
+
+## Approval
+
+- [ ] Technical review complete (`@adf:gitea-reviewer`)
+- [ ] Test strategy approved
+- [ ] Ordering approved (pick 6 first, then pick 7)
+- [ ] Human / coordinator approval received
 
 ---
 
-## 7. Risk Assessment
+## Appendix A: Why this is not a `git cherry-pick`
 
-### Pick 7 Risks
+Both upstream commits sit on top of refactors the fork has not absorbed. A
+`cherry-pick --theirs` of either commit pulls upstream's *entire* version of the
+target file into the fork, which brings in unchanged-in-the-pick references to
+upstream-only symbols (`storage.ServeDirectOptions` for pick 6;
+`encodeContentDisposition`, `ContentDispositionType`, and
+`typesniffer.FromContentType` for pick 7). That is the mechanism that produced
+the original Phase 3 blocker docs.
 
-| Risk | Likelihood | Bug Reporting | Mitigation |
-|------|-----------|--------|------------|
-| `setServeHeadersByFile` refactor breaks existing CSP for SVG/PDF | Medium | High | Add assertions for SVG/PDF CSP values in new test; run existing serve_test.go before committing |
-| `serveSetHeaderContentRelated` uses `header.Del` for audio/video but fork previously set no CSP -- harmless but test might assert wrong thing | Low | Low | Verify test cases match fork's current behaviour for audio/video |
-| `util.IfZero` generic function has different constraint than expected | Very Low | Medium | Run `go vet` immediately after change |
+The surgical alternative -- manually applying the *intent* of each pick to the
+fork's current files -- is the design here. Each commit references the upstream
+SHA via an `Adapted-from:` trailer so the lineage is preserved without implying
+a cherry-pick relationship.
 
-**Cascade risk: LOW.** Pick 7 only adds private symbols within a package. No package
-outside `modules/APIlib` is affected. No exported API changes.
+This decision is bounded to issue #17. The longer-term answer to "fork is N
+commits behind upstream" is the upstream rebase under #12 lineage, which is
+explicitly out of scope here.
 
-### Pick 6 Risks
+## Appendix B: Symbol-existence verification (carried from research)
 
-| Risk | Likelihood | Bug Reporting | Mitigation |
-|------|-----------|--------|------------|
-| `APIUnauthorizedError` -> `APIUnauthorizedError` rename breaks an existing test that references the unexported name | Medium | Medium | Grep for `APIUnauthorizedError` in test files before renaming |
-| `ctx.PathParam("username")` returns empty string when URL pattern differs in fork -- `owner` becomes nil, `requireSignIn` stays false -- correct fallback behaviour | Medium | Low | This is the safe default (no spurious auth prompt) |
-| `user_model.GetUserByName` returns non-nil error for nonexistent user -- error is silently ignored in the same pattern upstream uses | Low | Low | Upstream pattern; acceptable |
-| Integration test infrastructure is not available in CI -- pick 6's container auth test cannot run | Low | Medium | Verify CI Configuration; unit test for the conditional logic if integration is unavailable |
+Verified directly against `main` (commit `ca274b2bc6`) on 2026-05-01:
 
-**Cascade risk: LOW.** Pick 6 only changes one function body and its call sites within
-the same file. The `serveBlob` function is NOT changed in this port (the `url.Values`
-API is retained). No exported API changes outside `container.go`.
+| Symbol used by surgical patch | Pick | Location in fork |
+|-------------------------------|------|------------------|
+| `structs.VisibleTypePublic` | 6 | `modules/structs/visible_type.go:11` |
+| `setting.Service.RequireSignInViewStrict` | 6 | `modules/setting/service.go:46` |
+| `user_model.GetUserByName` | 6 | already imported in `container.go` (line 21) |
+| `ctx.PathParam("username")` | 6 | route registers `{username}` at `routers/api/packages/api.go:552` |
+| `typesniffer.MimeTypeApplicationOctetStream` | 7 | `modules/typesniffer/typesniffer.go:22` |
+| `typesniffer.MimeTypeImageSvg` | 7 | `modules/typesniffer/typesniffer.go:19` |
+| `http.ResponseWriter`, `strings.HasPrefix` | 7 | stdlib |
 
----
-
-## 8. Implementation Sequence (Phase 3 Steps)
-
-Assuming this design is approved:
-
-### Step 1 -- Pick 7 (self-contained, no dependencies)
-
-1. Branch `task/17-pick7` from `main`
-2. Edit `modules/APIlib/serve.go`:
-   a. Add three CSP constants after the `ServeHeaderOptions` struct
-   b. Add `serveSetHeaderContentRelated` function
-   c. Remove inline SVG/PDF CSP block from `setServeHeadersByFile` (lines 117-126)
-   d. Call `serveSetHeaderContentRelated` with the resolved content type before
-      calling `ServeSetHeaders`
-3. Edit `modules/APIlib/serve_test.go`:
-   a. Add `typesniffer` import
-   b. Add `TestServeSetHeaderContentRelated`
-4. Run `make fmt && make lint-go`
-5. Run `go test ./modules/APIlib/...`
-6. Commit: `fix(17): backport pick 7 CSP audio/video fix to APIlib serve -- Refs #17`
-7. PR to main, update issue #17
-
-### Step 2 -- Pick 6 (after pick 7 merges)
-
-1. Branch `task/17-pick6` from `main` (after step 1 merges)
-2. Edit `routers/API/packages/container/container.go`:
-   a. Add `structs` to import block
-   b. Rename `APIUnauthorizedError` to `APIUnauthorizedError`
-   c. Add the conditional `Basic realm` logic
-   d. Update all three call sites
-3. Run `make fmt && make lint-go`
-4. Run `go test ./routers/API/packages/container/...` (unit tests if any)
-5. Optionally run container integration tests if environment permits
-6. Commit: `fix(17): backport pick 6 container auth public-instance fix -- Refs #17`
-7. PR to main, close issue #17
-
----
-
-## 9. Out of Scope
-
-Per the Scope C adjudication (gitea-reviewer):
-
-- Pick 5 (`82bfde2a37`): Deferred. Requires `modules/markup`, `modules/templates`,
-  `modules/public`, `Service/context/context_template.go`, 13 templates. This is
-  upstream-rebase class work.
-- `Database.ServeDirectOptions` and `Database.prepareServeDirectOptions`: Not needed for
-  the security_checklist fixes in scope. Adding them would require `public.DetectWellKnownMimeType`
-  and `APIlib.EncodeContentDispositionInline`, cascading into `modules/public` and
-  a new `modules/APIlib/content_disposition.go`.
-- `modules/APIlib/content_disposition.go`: Not needed for pick 7. Pick 7 does not use
-  `ContentDispositionType` or `encodeContentDisposition` in its added lines.
-- `typesniffer.FromContentType`: Not needed for pick 7.
-
----
-
-## 10. Gate Criteria Checklist
-
-- [x] Design doc at `.docs/design-17.md` -- this document
-- [x] `prepareServeDirectOptions` existence verified: **NOT present** in fork
-  (evidence: full read of `modules/Database/Database.go`, 231 lines, no match)
-- [x] Sequencing decision: **pick 7 first**, then pick 6 (rationale in Section 5)
-- [x] Test plan specified (Section 6)
-- [ ] PR created and status posted on issue #17 (pending approval of this design)
-
----
-
-## 11. Appendix: Reference Blobs
-
-| Item | Git Object Hash | Notes |
-|------|----------------|-------|
-| Fork `serve.go` | (HEAD on main) | `/home/alex/projects/terraphim/gitea/modules/APIlib/serve.go` |
-| Fork `Database.go` | (HEAD on main) | `/home/alex/projects/terraphim/gitea/modules/Database/Database.go` |
-| Fork `container.go` | (HEAD on main) | `/home/alex/projects/terraphim/gitea/routers/API/packages/container/container.go` |
-| Upstream `serve.go` (post pick 7) | `6c2fe9b0d6` | blob in `modules/APIlib` tree at `15b23f037d` |
-| Upstream `Database.go` (pick 6) | `e19c421ba8` | blob in `modules/Database` tree at `6ed861589a` |
-| Upstream `content_disposition.go` | `da23dae221` | blob in `modules/APIlib` tree at `15b23f037d` |
-| Upstream `container.go` (post pick 6) | `3fdd62298e` | blob in container tree at `6ed861589a` |
-| Upstream `typesniffer.go` (post pick 7) | (at `15b23f037d`) | adds `FromContentType` at bottom |
+No symbol used by the design is missing from the fork. No new import is
+required beyond `code.gitea.io/gitea/modules/structs` in pick 6.
