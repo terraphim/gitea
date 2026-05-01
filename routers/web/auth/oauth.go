@@ -10,6 +10,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -34,7 +35,13 @@ import (
 
 // SignInOAuth handles the OAuth2 login buttons
 func SignInOAuth(ctx *context.Context) {
-	authName := ctx.PathParam("provider")
+	// the provider is escaped by backend QueryEscape and frontend urlQueryEscape
+	// so always use QueryUnescape to decode it
+	authName, err := url.QueryUnescape(ctx.PathParamRaw("provider"))
+	if err != nil {
+		ctx.HTTPError(http.StatusBadRequest, "invalid provider name encoding")
+		return
+	}
 	authSource, err := auth.GetActiveOAuth2SourceByAuthName(ctx, authName)
 	if err != nil {
 		ctx.ServerError("SignIn", err)

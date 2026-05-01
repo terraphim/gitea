@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"html"
 	"html/template"
@@ -613,6 +614,16 @@ func handleAuthorizationCode(ctx *context.Context, form forms.AccessTokenForm, s
 		})
 		return
 	}
+	if authorizationCode.IsExpired() {
+		if err := authorizationCode.Invalidate(ctx); err != nil && !errors.Is(err, auth.ErrOAuth2AuthorizationCodeInvalidated) {
+			log.Error("failed to delete expired OAuth2 authorization code %d: %v", authorizationCode.ID, err)
+		}
+		handleAccessTokenError(ctx, oauth2_provider.AccessTokenError{
+			ErrorCode:        oauth2_provider.AccessTokenErrorCodeInvalidGrant,
+			ErrorDescription: "authorization code expired",
+		})
+		return
+	}
 	// check if code verifier authorizes the client, PKCE support
 	if !authorizationCode.ValidateCodeChallenge(form.CodeVerifier) {
 		handleAccessTokenError(ctx, oauth2_provider.AccessTokenError{
@@ -631,9 +642,15 @@ func handleAuthorizationCode(ctx *context.Context, form forms.AccessTokenForm, s
 	}
 	// remove token from database to deny duplicate usage
 	if err := authorizationCode.Invalidate(ctx); err != nil {
+		errDescription := "cannot process your request"
+		errCode := oauth2_provider.AccessTokenErrorCodeInvalidRequest
+		if errors.Is(err, auth.ErrOAuth2AuthorizationCodeInvalidated) {
+			errDescription = "authorization code already used"
+			errCode = oauth2_provider.AccessTokenErrorCodeInvalidGrant
+		}
 		handleAccessTokenError(ctx, oauth2_provider.AccessTokenError{
-			ErrorCode:        oauth2_provider.AccessTokenErrorCodeInvalidRequest,
-			ErrorDescription: "cannot proceed your request",
+			ErrorCode:        errCode,
+			ErrorDescription: errDescription,
 		})
 		return
 	}
