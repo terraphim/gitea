@@ -32,6 +32,10 @@ func TestServeContentByReader(t *testing.T) {
 		if expectedStatusCode == http.StatusPartialContent || expectedStatusCode == http.StatusOK {
 			assert.Equal(t, strconv.Itoa(len(expectedContent)), w.Header().Get("Content-Length"))
 			assert.Equal(t, expectedContent, w.Body.String())
+			// Pick 7 (#37455) regression: every served file gets a CSP header.
+			// The detected content type for plain ASCII is text/plain, which
+			// falls under the default sandbox CSP (not PDF, not audio/video).
+			assert.Equal(t, serveHeaderCspDefault, w.Header().Get("Content-Security-Policy"))
 		}
 	}
 
@@ -58,6 +62,48 @@ func TestServeContentByReader(t *testing.T) {
 	})
 }
 
+func TestServeSetContentSecurityHeaders(t *testing.T) {
+	// Sanity-check the default policy still carries the sandbox attribute --
+	// a regression here would silently weaken the SVG sandbox.
+	assert.Contains(t, serveHeaderCspDefault, "; sandbox")
+
+	cases := []struct {
+		name        string
+		contentType string
+		expected    string // "" means: no Content-Security-Policy header
+	}{
+		{"empty content type uses default", "", serveHeaderCspDefault},
+		{"unknown content type uses default", "any", serveHeaderCspDefault},
+		{"svg uses default sandbox", "image/svg+xml", serveHeaderCspDefault},
+		{"html uses default sandbox", "text/html; charset=utf-8", serveHeaderCspDefault},
+		{"pdf drops sandbox", "application/pdf", serveHeaderCspPdf},
+		{"pdf with charset still drops sandbox", "application/pdf; charset=utf-8", serveHeaderCspPdf},
+		{"audio is exempt", "audio/mp4", ""},
+		{"audio with codecs is exempt", "audio/ogg; codecs=opus", ""},
+		{"video is exempt", "video/mp4", ""},
+		{"video with codecs is exempt", "video/ogg; codecs=theora,vorbis", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			// Seed with a non-empty value so the audio/video exemption can
+			// also assert the header is removed (not merely absent).
+			w.Header().Set("Content-Security-Policy", "should-be-replaced")
+
+			serveSetContentSecurityHeaders(w, tc.contentType)
+
+			if tc.expected == "" {
+				_, present := w.Header()["Content-Security-Policy"]
+				assert.False(t, present,
+					"expected CSP header to be removed for %q, got %q",
+					tc.contentType, w.Header().Get("Content-Security-Policy"))
+			} else {
+				assert.Equal(t, tc.expected, w.Header().Get("Content-Security-Policy"))
+			}
+		})
+	}
+}
+
 func TestServeContentByReadSeeker(t *testing.T) {
 	data := "0123456789abcdef"
 	tmpFile := t.TempDir() + "/test"
@@ -81,6 +127,9 @@ func TestServeContentByReadSeeker(t *testing.T) {
 		if expectedStatusCode == http.StatusPartialContent || expectedStatusCode == http.StatusOK {
 			assert.Equal(t, strconv.Itoa(len(expectedContent)), w.Header().Get("Content-Length"))
 			assert.Equal(t, expectedContent, w.Body.String())
+			// Pick 7 (#37455) regression: ServeSetHeaders writes a CSP header
+			// for default served content (the test fixture is plain ASCII).
+			assert.Equal(t, serveHeaderCspDefault, w.Header().Get("Content-Security-Policy"))
 		}
 	}
 

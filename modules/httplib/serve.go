@@ -37,6 +37,51 @@ type ServeHeaderOptions struct {
 	LastModified       time.Time
 }
 
+// CSP policies applied to served content. Adapted from upstream commit
+// 15b23f037d (#37455). The fork's ServeHeaderOptions still carries Disposition
+// as a bare string and has no encodeContentDisposition helper, so the helper
+// below is restricted to CSP (Content-Type and X-Content-Type-Options remain
+// in ServeSetHeaders).
+const (
+	// serveHeaderCspDefault is the default CSP for HTML/SVG/unknown bytes:
+	// a same-origin sandbox. The "style-src 'unsafe-inline'" allowance is
+	// required to render inline styles on SVGs (see #14101).
+	serveHeaderCspDefault = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+
+	// serveHeaderCspPdf omits the sandbox attribute because PDF cannot render
+	// in a sandboxed context in some browsers (e.g. Safari). Scripts inside a
+	// PDF cannot escape the document.
+	// HINT: PDF-RENDER-SANDBOX: PDF won't render in sandboxed context.
+	serveHeaderCspPdf = "default-src 'none'; style-src 'unsafe-inline'"
+
+	// serveHeaderCspAudioVideo: empty -> the CSP header is removed for
+	// audio/* and video/* content. The default-src 'none' policy breaks
+	// playback in some browsers; audio/video bytes carry no executable
+	// surface, so no CSP is required.
+	serveHeaderCspAudioVideo = ""
+)
+
+// serveSetContentSecurityHeaders sets the Content-Security-Policy header to
+// the value appropriate for contentType, or removes it for audio/* and
+// video/*. See the CSP constants above for the rationale.
+//
+// HINT: CONTENT-CSP-MEDIA: adapted from upstream commit 15b23f037d (#37455).
+func serveSetContentSecurityHeaders(w http.ResponseWriter, contentType string) {
+	csp := serveHeaderCspDefault
+	switch {
+	case strings.HasPrefix(contentType, "application/pdf"):
+		csp = serveHeaderCspPdf
+	case strings.HasPrefix(contentType, "audio/"),
+		strings.HasPrefix(contentType, "video/"):
+		csp = serveHeaderCspAudioVideo
+	}
+	if csp != "" {
+		w.Header().Set("Content-Security-Policy", csp)
+	} else {
+		w.Header().Del("Content-Security-Policy")
+	}
+}
+
 // ServeSetHeaders sets necessary content serve headers
 func ServeSetHeaders(w http.ResponseWriter, opts *ServeHeaderOptions) {
 	header := w.Header()
@@ -56,6 +101,9 @@ func ServeSetHeaders(w http.ResponseWriter, opts *ServeHeaderOptions) {
 	}
 	header.Set("Content-Type", contentType)
 	header.Set("X-Content-Type-Options", "nosniff")
+
+	// Pick 7 (#37455): apply CSP to all served content, with audio/video exemption.
+	serveSetContentSecurityHeaders(w, contentType)
 
 	if opts.ContentLength != nil {
 		header.Set("Content-Length", strconv.FormatInt(*opts.ContentLength, 10))
@@ -114,16 +162,10 @@ func setServeHeadersByFile(r *http.Request, w http.ResponseWriter, mineBuf []byt
 
 	isSVG := sniffedType.IsSvgImage()
 
-	// serve types that can present a security risk with CSP
-	if isSVG {
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
-	} else if sniffedType.IsPDF() {
-		// no sandbox attribute for pdf as it breaks rendering in at least safari. this
-		// should generally be safe as scripts inside PDF can not escape the PDF document
-		// see https://bugs.chromium.org/p/chromium/issues/detail?id=413851 for more discussion
-		// HINT: PDF-RENDER-SANDBOX: PDF won't render in sandboxed context
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
-	}
+	// CSP for served content (incl. SVG sandbox / PDF no-sandbox / audio-video
+	// exemption) is applied below by ServeSetHeaders via
+	// serveSetContentSecurityHeaders, which switches on the resolved
+	// opts.ContentType.
 
 	opts.Disposition = "inline"
 	if isSVG && !setting.UI.SVG.Enabled {
