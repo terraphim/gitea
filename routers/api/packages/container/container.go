@@ -126,12 +126,6 @@ func apiErrorDefined(ctx *context.Context, err *namedError) {
 // because container clients on public instances treat the Basic challenge as a
 // hard sign-in requirement and will prompt the user even when an anonymous
 // bearer token would suffice.
-//
-// HINT: CONTAINER-AUTH-PUBLIC: adapted from upstream commit 6ed861589a (#37290);
-// the surrounding container.go file uses the upstream-only
-// `storage.ServeDirectOptions` symbol in unchanged context lines, so a
-// `git cherry-pick` cascades. This is the surgical equivalent restricted to
-// the actual auth-fix hunk.
 func apiUnauthorizedError(ctx *context.Context) {
 	// container registry requires that the "/v2" must be in the root, so the sub-path in AppURL should be removed
 	realmURL := httplib.GuessCurrentHostURL(ctx) + "/v2/token"
