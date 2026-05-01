@@ -233,6 +233,19 @@ func TestPackageContainer(t *testing.T) {
 			resp := MakeRequest(t, req, http.StatusUnauthorized)
 			assert.ElementsMatch(t, expected, resp.Header().Values("WWW-Authenticate"))
 		})
+
+		t.Run("PublicOwner", func(t *testing.T) {
+			defer tests.PrintCurrentTest(t)()
+
+			// Anonymous request to a /v2/{username}/... route where the owner is
+			// public must emit only the Bearer realm header. This pins the
+			// `owner != nil && Visibility == VisibleTypePublic` branch (i.e.
+			// GetUserByName succeeds and the visibility check returns false),
+			// distinct from /v2 where owner == nil short-circuits the condition.
+			req := NewRequest(t, "GET", fmt.Sprintf("%sv2/%s/anyimage/tags/list", setting.AppURL, user.LowerName))
+			resp := MakeRequest(t, req, http.StatusUnauthorized)
+			assert.ElementsMatch(t, expected[:1], resp.Header().Values("WWW-Authenticate"))
+		})
 	})
 
 	t.Run("DetermineSupport", func(t *testing.T) {
