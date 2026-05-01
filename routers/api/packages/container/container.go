@@ -26,6 +26,7 @@ import (
 	packages_module "code.gitea.io/gitea/modules/packages"
 	container_module "code.gitea.io/gitea/modules/packages/container"
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/routers/api/packages/helper"
 	auth_service "code.gitea.io/gitea/services/auth"
@@ -120,10 +121,25 @@ func apiErrorDefined(ctx *context.Context, err *namedError) {
 	})
 }
 
+// apiUnauthorizedError responds with a 401 for OCI/container registry endpoints.
+// The "Basic realm" challenge is only emitted when sign-in is actually required,
+// because container clients on public instances treat the Basic challenge as a
+// hard sign-in requirement and will prompt the user even when an anonymous
+// bearer token would suffice.
 func apiUnauthorizedError(ctx *context.Context) {
 	// container registry requires that the "/v2" must be in the root, so the sub-path in AppURL should be removed
 	realmURL := httplib.GuessCurrentHostURL(ctx) + "/v2/token"
 	ctx.Resp.Header().Add("WWW-Authenticate", `Bearer realm="`+realmURL+`",service="container_registry",scope="*"`)
+
+	ownerName := ctx.PathParam("username")
+	owner, _ := user_model.GetUserByName(ctx, ownerName)
+	requireSignIn := owner != nil && owner.Visibility != structs.VisibleTypePublic
+	requireSignIn = requireSignIn || setting.Service.RequireSignInViewStrict
+	if requireSignIn {
+		// support apple container CLI: container registry login <host> -u
+		ctx.Resp.Header().Add("WWW-Authenticate", `Basic realm="Gitea Container Registry"`)
+	}
+
 	apiErrorDefined(ctx, errUnauthorized)
 }
 
