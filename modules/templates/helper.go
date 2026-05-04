@@ -30,12 +30,15 @@ func newFuncMapWebPage() template.FuncMap {
 
 		// -----------------------------------------------------------------
 		// html/template related functions
-		"dict":        dict, // it's lowercase because this name has been widely used. Our other functions should have uppercase names.
-		"Iif":         iif,
-		"Eval":        evalTokens,
-		"HTMLFormat":  htmlFormat,
-		"QueryEscape": queryEscape,
-		"QueryBuild":  QueryBuild,
+		"dict":         dict, // it's lowercase because this name has been widely used. Our other functions should have uppercase names.
+		"Iif":          iif,
+		"Eval":         evalTokens,
+		"HTMLFormat":   htmlFormat,
+		"QueryEscape":  queryEscape,
+		"QueryBuild":   QueryBuild,
+		"SanitizeHTML": SanitizeHTML,
+		"URLJoin":      util.URLJoin,
+		"DotEscape":    dotEscape,
 
 		"PathEscape":         url.PathEscape,
 		"PathEscapeSegments": util.PathEscapeSegments,
@@ -80,8 +83,21 @@ func newFuncMapWebPage() template.FuncMap {
 		"AssetUrlPrefix": func() string {
 			return setting.StaticURLPrefix + "/assets"
 		},
+		"AppUrl": func() string {
+			// The usage of AppUrl should be avoided as much as possible,
+			// because the AppURL(ROOT_URL) may not match user's visiting site and the ROOT_URL in app.ini may be incorrect.
+			// And it's difficult for Gitea to guess absolute URL correctly with zero configuration,
+			// because Gitea doesn't know whether the scheme is HTTP or HTTPS unless the reverse proxy could tell Gitea.
+			return setting.AppURL
+		},
 		"AppVer": func() string {
 			return setting.AppVer
+		},
+		"AssetVersion": func() string {
+			return setting.AssetVersion
+		},
+		"DefaultShowFullName": func() bool {
+			return setting.UI.DefaultShowFullName
 		},
 		"AppDomain": func() string { // TODO: helm registry still uses it, need to use current request host in the future
 			return setting.Domain
@@ -144,6 +160,11 @@ func newFuncMapWebPage() template.FuncMap {
 
 func sanitizeHTML(msg string) template.HTML {
 	return markup.Sanitize(msg)
+}
+
+// dotEscape wraps a dots in names with ZWJ [U+200D] in order to prevent auto-linkers from detecting these as urls
+func dotEscape(raw string) string {
+	return strings.ReplaceAll(raw, ".", "\u200d.\u200d")
 }
 
 // SanitizeHTML sanitizes HTML content
