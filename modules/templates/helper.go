@@ -146,6 +146,11 @@ func sanitizeHTML(msg string) template.HTML {
 	return markup.Sanitize(msg)
 }
 
+// SanitizeHTML sanitizes HTML content
+func SanitizeHTML(s string) template.HTML {
+	return markup.Sanitize(s)
+}
+
 func htmlFormat(s any, args ...any) template.HTML {
 	if len(args) == 0 {
 		// to prevent developers from calling "HTMLFormat $userInput" by mistake which will lead to XSS
@@ -286,4 +291,9 @@ func QueryBuild(a ...any) template.URL {
 		}
 	}
 	return template.URL(s)
+}
+
+// NewFuncMap returns functions for injecting to templates
+func NewFuncMap() template.FuncMap {
+	return newFuncMapWebPage()
 }
