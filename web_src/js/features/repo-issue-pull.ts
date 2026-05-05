@@ -72,6 +72,8 @@ function initRepoPullRequestMergeForm(box: HTMLElement) {
 }
 
 function executeScripts(elem: HTMLElement) {
+  // find any existing nonce value from the current page and apply it to the new script
+  const scriptNonce = document.querySelector('script[nonce]')!.getAttribute('nonce')!;
   for (const oldScript of elem.querySelectorAll('script')) {
     // TODO: that's the only way to load the data for the merge form. In the future
     //  we need to completely decouple the page data and embedded script
@@ -81,6 +83,7 @@ function executeScripts(elem: HTMLElement) {
       if (attr.name === 'type' && attr.value === 'module') continue;
       newScript.setAttribute(attr.name, attr.value);
     }
+    newScript.setAttribute('nonce', scriptNonce);
     newScript.text = oldScript.text;
     document.body.append(newScript);
   }

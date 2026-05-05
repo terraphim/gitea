@@ -1,0 +1,5 @@
+[constraints]
+max_cycles = 10
+max_cc = 35
+max_file_lines = 1200
+no_god_files = true

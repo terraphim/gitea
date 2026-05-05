@@ -89,6 +89,11 @@ func handleRequest(w http.ResponseWriter, req *http.Request, fs http.FileSystem,
 	servePublicAsset(w, req, fi, fi.ModTime(), f)
 }
 
+// AssetURI returns the URI for a frontend asset.
+func AssetURI(originPath string) string {
+	return setting.StaticURLPrefix + "/assets/" + originPath
+}
+
 // servePublicAsset serve http content
 func servePublicAsset(w http.ResponseWriter, req *http.Request, fi os.FileInfo, modtime time.Time, content io.ReadSeeker) {
 	setWellKnownContentType(w, fi.Name())
