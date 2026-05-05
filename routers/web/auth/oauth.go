@@ -10,7 +10,6 @@ import (
 	"html"
 	"io"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 

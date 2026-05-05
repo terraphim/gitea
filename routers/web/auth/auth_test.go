@@ -81,7 +81,7 @@ func TestSignUpOAuth2Login(t *testing.T) {
 		// then the user will be redirected to the link account page, and see a message about the missing fields
 		ctx, _ = contexttest.MockContext(t, "/user/link_account", mockOpt)
 		LinkAccount(ctx)
-		assert.Equal(t, template.HTML("auth.oauth_callback_unable_auto_reg:dummy+auth&#39;s source,email"), ctx.Data["AutoRegistrationFailedPrompt"])
+		assert.Equal(t, template.HTML("auth.oauth_callback_unable_auto_reg:dummy+auth's source,email"), ctx.Data["AutoRegistrationFailedPrompt"])
 	})
 
 	t.Run("OAuth2CallbackError", func(t *testing.T) {
