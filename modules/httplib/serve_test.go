@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"code.gitea.io/gitea/modules/typesniffer"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -74,7 +76,7 @@ func TestServeSetContentSecurityHeaders(t *testing.T) {
 	}{
 		{"empty content type uses default", "", serveHeaderCspDefault},
 		{"unknown content type uses default", "any", serveHeaderCspDefault},
-		{"svg uses default sandbox", "image/svg+xml", serveHeaderCspDefault},
+		{"svg uses default sandbox", typesniffer.MimeTypeImageSvg, serveHeaderCspDefault},
 		{"html uses default sandbox", "text/html; charset=utf-8", serveHeaderCspDefault},
 		{"pdf drops sandbox", "application/pdf", serveHeaderCspPdf},
 		{"pdf with charset still drops sandbox", "application/pdf; charset=utf-8", serveHeaderCspPdf},
