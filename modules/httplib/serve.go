@@ -37,7 +37,7 @@ type ServeHeaderOptions struct {
 	LastModified       time.Time
 }
 
-// CSP policies applied to served content. Adapted from upstream commit
+// CSP policies applied to served content. Applied from upstream commit
 // 15b23f037d (#37455). The fork's ServeHeaderOptions still carries Disposition
 // as a bare string and has no encodeContentDisposition helper, so the helper
 // below is restricted to CSP (Content-Type and X-Content-Type-Options remain
@@ -65,14 +65,13 @@ const (
 // the value appropriate for contentType, or removes it for audio/* and
 // video/*. See the CSP constants above for the rationale.
 //
-// HINT: CONTENT-CSP-MEDIA: adapted from upstream commit 15b23f037d (#37455).
+// HINT: CONTENT-CSP-MEDIA: applied from upstream commit 15b23f037d (#37455).
 func serveSetContentSecurityHeaders(w http.ResponseWriter, contentType string) {
 	csp := serveHeaderCspDefault
-	switch {
-	case strings.HasPrefix(contentType, "application/pdf"):
+	if strings.HasPrefix(contentType, "application/pdf") {
 		csp = serveHeaderCspPdf
-	case strings.HasPrefix(contentType, "audio/"),
-		strings.HasPrefix(contentType, "video/"):
+	}
+	if strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "audio/") {
 		csp = serveHeaderCspAudioVideo
 	}
 	if csp != "" {
