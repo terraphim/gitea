@@ -325,6 +325,7 @@ func ListBranches(ctx *context.APIContext) {
 			ListOptions:     listOptions,
 			RepoID:          ctx.Repo.Repository.ID,
 			IsDeletedBranch: optional.Some(false),
+			Keyword:         ctx.FormString("search"),
 		}
 		var err error
 		totalNumOfBranches, err = db.Count[git_model.Branch](ctx, branchOpts)
