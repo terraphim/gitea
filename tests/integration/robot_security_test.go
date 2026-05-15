@@ -193,6 +193,9 @@ func TestRobotAPI_ReadyEndpoint_SkipInProgress(t *testing.T) {
 	var result map[string]any
 	DecodeJSON(t, resp, &result)
 	assert.Contains(t, result, "repo_id")
+	assert.Contains(t, result, "total_count")
+	assert.Contains(t, result, "ready_issues")
+	assert.Contains(t, result, "repo_name")
 
 	// Test ready endpoint with skip_in_progress=true
 	req2 := NewRequestf(t, "GET", "/api/v1/robot/ready?owner=%s&repo=%s&skip_in_progress=true", owner.Name, repo.Name)
@@ -201,6 +204,9 @@ func TestRobotAPI_ReadyEndpoint_SkipInProgress(t *testing.T) {
 	var result2 map[string]any
 	DecodeJSON(t, resp2, &result2)
 	assert.Contains(t, result2, "repo_id")
+	assert.Contains(t, result2, "total_count")
+	assert.Contains(t, result2, "ready_issues")
+	assert.Contains(t, result2, "repo_name")
 }
 
 // TestRobotAPI_GraphEndpoint tests the /robot/graph endpoint

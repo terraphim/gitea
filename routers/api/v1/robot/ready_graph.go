@@ -12,7 +12,6 @@ import (
 	"code.gitea.io/gitea/models/db"
 	git_model "code.gitea.io/gitea/models/git"
 	"code.gitea.io/gitea/models/issues"
-	issues_model "code.gitea.io/gitea/models/issues"
 	"code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/optional"
@@ -40,6 +39,9 @@ type ReadyResponse struct {
 	TotalCount  int          `json:"total_count"`
 	ReadyIssues []ReadyIssue `json:"ready_issues"`
 }
+
+// taskBranchRe matches task/<IDX>-* branch naming convention (e.g., task/69-ci)
+var taskBranchRe = regexp.MustCompile(`^task/(\d+)-`)
 
 // Ready returns issues that are ready to be worked on (no blocking dependencies)
 func Ready(ctx *context.APIContext) {
@@ -300,27 +302,33 @@ func getInProgressIssues(ctx *context.APIContext, repository *repo.Repository) (
 	return inProgress, nil
 }
 
-// findInProgressByBranches finds issues that have a branch matching task/<IDX>-* pattern
+// findInProgressByBranches finds issues that have a branch matching task/<IDX>-* pattern.
+// Uses a single batch query instead of N+1 per-branch lookups.
 func findInProgressByBranches(ctx *context.APIContext, repository *repo.Repository, inProgress map[int64]bool) error {
-	// Get all non-deleted branches for this repo
 	branches, err := git_model.GetBranches(ctx, repository.ID, nil, false)
 	if err != nil {
 		return err
 	}
 
-	// Pattern to match task/<IDX>-* e.g., task/69-ci
-	pattern := regexp.MustCompile(`^task/(\d+)-`)
-
+	var indices []string
 	for _, branch := range branches {
-		matches := pattern.FindStringSubmatch(branch.Name)
+		matches := taskBranchRe.FindStringSubmatch(branch.Name)
 		if len(matches) >= 2 {
-			issueIndex := matches[1]
-			// We need to find the issue with this index
-			issueID, err := getIssueIDByIndex(ctx, repository.ID, issueIndex)
-			if err == nil && issueID > 0 {
-				inProgress[issueID] = true
-			}
+			indices = append(indices, matches[1])
 		}
+	}
+
+	if len(indices) == 0 {
+		return nil
+	}
+
+	issueIDs, err := getIssueIDsByIndices(ctx, repository.ID, indices)
+	if err != nil {
+		return err
+	}
+
+	for id := range issueIDs {
+		inProgress[id] = true
 	}
 
 	return nil
@@ -346,11 +354,12 @@ func findInProgressByPRs(ctx *context.APIContext, repository *repo.Repository, i
 
 // findInProgressByLabels finds issues with status/in-progress label
 func findInProgressByLabels(ctx *context.APIContext, repository *repo.Repository, inProgress map[int64]bool) error {
-	// Get the status/in-progress label
-	label, err := issues_model.GetLabelInRepoByName(ctx, repository.ID, "status/in-progress")
+	label, err := issues.GetLabelInRepoByName(ctx, repository.ID, "status/in-progress")
 	if err != nil {
-		// Label doesn't exist, that's fine - no issues can have it
-		return nil
+		if issues.IsErrRepoLabelNotExist(err) {
+			return nil
+		}
+		return err
 	}
 
 	// Get all issues with this label
@@ -366,23 +375,48 @@ func findInProgressByLabels(ctx *context.APIContext, repository *repo.Repository
 	return nil
 }
 
-// getIssueIDByIndex returns the issue ID for a given repository and issue index
-func getIssueIDByIndex(ctx *context.APIContext, repoID int64, indexStr string) (int64, error) {
-	var issueID int64
-	_, err := db.GetEngine(ctx).
+// getIssueIDsByIndices returns a set of issue IDs for the given repo and issue indices.
+// Uses a single batch query to avoid N+1 lookups.
+// Does not filter by is_closed: the ready list only contains open issues,
+// so a branch for a closed issue is harmless (a stale branch).
+func getIssueIDsByIndices(ctx *context.APIContext, repoID int64, indices []string) (map[int64]bool, error) {
+	result := make(map[int64]bool)
+	if len(indices) == 0 {
+		return result, nil
+	}
+
+	type row struct {
+		ID int64
+	}
+
+	rows := make([]row, 0)
+	sess := db.GetEngine(ctx).
 		Table("issue").
 		Select("id").
-		Where("repo_id = ? AND index = ? AND is_closed = ? AND is_pull = ?", repoID, indexStr, false, false).
-		Get(&issueID)
-	if err != nil {
-		return 0, err
+		Where("repo_id = ? AND is_pull = ?", repoID, false).
+		In("index", toAnySlice(indices))
+	if err := sess.Find(&rows); err != nil {
+		return nil, err
 	}
-	return issueID, nil
+
+	for _, r := range rows {
+		result[r.ID] = true
+	}
+	return result, nil
+}
+
+// toAnySlice converts []string to []any for xorm In() clause
+func toAnySlice(strs []string) []any {
+	out := make([]any, len(strs))
+	for i, s := range strs {
+		out[i] = s
+	}
+	return out
 }
 
 // getOpenPullRequestsForRepo returns all open pull requests for a repository
-func getOpenPullRequestsForRepo(ctx *context.APIContext, repoID int64) ([]*issues_model.PullRequest, error) {
-	prs := make([]*issues_model.PullRequest, 0)
+func getOpenPullRequestsForRepo(ctx *context.APIContext, repoID int64) ([]*issues.PullRequest, error) {
+	prs := make([]*issues.PullRequest, 0)
 	err := db.GetEngine(ctx).
 		Table("pull_request").
 		Join("INNER", "issue", "pull_request.issue_id = issue.id").
@@ -391,13 +425,14 @@ func getOpenPullRequestsForRepo(ctx *context.APIContext, repoID int64) ([]*issue
 	return prs, err
 }
 
-// getIssueIDsByLabel returns all issue IDs that have the given label
+// getIssueIDsByLabel returns all issue IDs in the given repo that have the given label
 func getIssueIDsByLabel(ctx *context.APIContext, repoID, labelID int64) ([]int64, error) {
 	issueIDs := make([]int64, 0)
 	err := db.GetEngine(ctx).
 		Table("issue_label").
-		Select("issue_id").
-		Where("label_id = ?", labelID).
+		Select("issue_label.issue_id").
+		Join("INNER", "issue", "issue_label.issue_id = issue.id").
+		Where("issue_label.label_id = ? AND issue.repo_id = ?", labelID, repoID).
 		Find(&issueIDs)
 	return issueIDs, err
 }
