@@ -178,6 +178,31 @@ func TestRobotAPI_ReadyEndpoint(t *testing.T) {
 	assert.Contains(t, result, "repo_id")
 }
 
+// TestRobotAPI_ReadyEndpoint_SkipInProgress tests the /robot/ready endpoint with skip_in_progress parameter
+func TestRobotAPI_ReadyEndpoint_SkipInProgress(t *testing.T) {
+	defer tests.PrepareTestEnv(t)()
+
+	// Use existing repo
+	repo := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 1})
+	owner := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: repo.OwnerID})
+
+	// Test ready endpoint with skip_in_progress=false
+	req := NewRequestf(t, "GET", "/api/v1/robot/ready?owner=%s&repo=%s&skip_in_progress=false", owner.Name, repo.Name)
+	resp := MakeRequest(t, req, http.StatusOK)
+
+	var result map[string]any
+	DecodeJSON(t, resp, &result)
+	assert.Contains(t, result, "repo_id")
+
+	// Test ready endpoint with skip_in_progress=true
+	req2 := NewRequestf(t, "GET", "/api/v1/robot/ready?owner=%s&repo=%s&skip_in_progress=true", owner.Name, repo.Name)
+	resp2 := MakeRequest(t, req2, http.StatusOK)
+
+	var result2 map[string]any
+	DecodeJSON(t, resp2, &result2)
+	assert.Contains(t, result2, "repo_id")
+}
+
 // TestRobotAPI_GraphEndpoint tests the /robot/graph endpoint
 func TestRobotAPI_GraphEndpoint(t *testing.T) {
 	defer tests.PrepareTestEnv(t)()

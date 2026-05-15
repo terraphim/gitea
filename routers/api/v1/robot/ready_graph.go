@@ -5,11 +5,14 @@ package robot
 
 import (
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
 	"code.gitea.io/gitea/models/db"
+	git_model "code.gitea.io/gitea/models/git"
 	"code.gitea.io/gitea/models/issues"
+	issues_model "code.gitea.io/gitea/models/issues"
 	"code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/optional"
@@ -49,6 +52,7 @@ func Ready(ctx *context.APIContext) {
 	// Get parameters from query string
 	owner := ctx.FormString("owner")
 	repoName := ctx.FormString("repo")
+	skipInProgress := ctx.FormBool("skip_in_progress")
 
 	// 2. Validate input
 	if err := validateOwnerRepoInput(owner, repoName); err != nil {
@@ -164,7 +168,7 @@ func Ready(ctx *context.APIContext) {
 	}
 
 	// 7. Return ready issues (actual implementation)
-	readyIssues, err := getReadyIssues(ctx, repository)
+	readyIssues, err := getReadyIssues(ctx, repository, skipInProgress)
 	if err != nil {
 		log.Error("Failed to get ready issues for repo %d: %v", repository.ID, err)
 		ctx.APIError(http.StatusInternalServerError, err)
@@ -183,7 +187,7 @@ func Ready(ctx *context.APIContext) {
 
 // getReadyIssues queries the database for issues that are ready to be worked on
 // (open issues with no blocking dependencies)
-func getReadyIssues(ctx *context.APIContext, repository *repo.Repository) ([]ReadyIssue, error) {
+func getReadyIssues(ctx *context.APIContext, repository *repo.Repository, skipInProgress bool) ([]ReadyIssue, error) {
 	// Get all open issues for the repository using correct API
 	issuesList, err := issues.Issues(ctx, &issues.IssuesOptions{
 		RepoIDs:  []int64{repository.ID},
@@ -210,9 +214,25 @@ func getReadyIssues(ctx *context.APIContext, repository *repo.Repository) ([]Rea
 
 	baseline := 1.0 - setting.IssueGraphSettings.DampingFactor
 
+	// Build in-progress data structures if skipInProgress is enabled
+	var inProgressIssues map[int64]bool
+	if skipInProgress {
+		inProgressIssues, err = getInProgressIssues(ctx, repository)
+		if err != nil {
+			log.Warn("Failed to get in-progress issues: %v", err)
+			// Continue without filtering - be permissive
+			inProgressIssues = make(map[int64]bool)
+		}
+	}
+
 	readyIssues := make([]ReadyIssue, 0)
 
 	for _, issue := range issuesList {
+		// Skip in-progress issues if requested
+		if skipInProgress && inProgressIssues[issue.ID] {
+			continue
+		}
+
 		// Get dependency count for this issue
 		// In Gitea, dependencies are stored in issue_dependency table
 		// We need to check if this issue has any open blockers
@@ -252,6 +272,134 @@ func getReadyIssues(ctx *context.APIContext, repository *repo.Repository) ([]Rea
 	})
 
 	return readyIssues, nil
+}
+
+// getInProgressIssues returns a map of issue IDs that are considered "in progress".
+// An issue is in progress if ANY of these is true:
+// 1. A remote branch matching `task/<IDX>-*` pattern exists
+// 2. An open PR references the issue via IssueID
+// 3. The `status/in-progress` label is present
+func getInProgressIssues(ctx *context.APIContext, repository *repo.Repository) (map[int64]bool, error) {
+	inProgress := make(map[int64]bool)
+
+	// 1. Find issues with branches matching task/<IDX>-* pattern
+	if err := findInProgressByBranches(ctx, repository, inProgress); err != nil {
+		log.Warn("Failed to find in-progress issues by branches: %v", err)
+	}
+
+	// 2. Find issues referenced by open PRs
+	if err := findInProgressByPRs(ctx, repository, inProgress); err != nil {
+		log.Warn("Failed to find in-progress issues by PRs: %v", err)
+	}
+
+	// 3. Find issues with status/in-progress label
+	if err := findInProgressByLabels(ctx, repository, inProgress); err != nil {
+		log.Warn("Failed to find in-progress issues by labels: %v", err)
+	}
+
+	return inProgress, nil
+}
+
+// findInProgressByBranches finds issues that have a branch matching task/<IDX>-* pattern
+func findInProgressByBranches(ctx *context.APIContext, repository *repo.Repository, inProgress map[int64]bool) error {
+	// Get all non-deleted branches for this repo
+	branches, err := git_model.GetBranches(ctx, repository.ID, nil, false)
+	if err != nil {
+		return err
+	}
+
+	// Pattern to match task/<IDX>-* e.g., task/69-ci
+	pattern := regexp.MustCompile(`^task/(\d+)-`)
+
+	for _, branch := range branches {
+		matches := pattern.FindStringSubmatch(branch.Name)
+		if len(matches) >= 2 {
+			issueIndex := matches[1]
+			// We need to find the issue with this index
+			issueID, err := getIssueIDByIndex(ctx, repository.ID, issueIndex)
+			if err == nil && issueID > 0 {
+				inProgress[issueID] = true
+			}
+		}
+	}
+
+	return nil
+}
+
+// findInProgressByPRs finds issues that have open PRs referencing them
+func findInProgressByPRs(ctx *context.APIContext, repository *repo.Repository, inProgress map[int64]bool) error {
+	// Get all open pull requests for this repo
+	// An open PR has: has_merged = false AND issue.is_closed = false
+	openPRs, err := getOpenPullRequestsForRepo(ctx, repository.ID)
+	if err != nil {
+		return err
+	}
+
+	for _, pr := range openPRs {
+		if pr.IssueID > 0 {
+			inProgress[pr.IssueID] = true
+		}
+	}
+
+	return nil
+}
+
+// findInProgressByLabels finds issues with status/in-progress label
+func findInProgressByLabels(ctx *context.APIContext, repository *repo.Repository, inProgress map[int64]bool) error {
+	// Get the status/in-progress label
+	label, err := issues_model.GetLabelInRepoByName(ctx, repository.ID, "status/in-progress")
+	if err != nil {
+		// Label doesn't exist, that's fine - no issues can have it
+		return nil
+	}
+
+	// Get all issues with this label
+	issueIDs, err := getIssueIDsByLabel(ctx, repository.ID, label.ID)
+	if err != nil {
+		return err
+	}
+
+	for _, issueID := range issueIDs {
+		inProgress[issueID] = true
+	}
+
+	return nil
+}
+
+// getIssueIDByIndex returns the issue ID for a given repository and issue index
+func getIssueIDByIndex(ctx *context.APIContext, repoID int64, indexStr string) (int64, error) {
+	var issueID int64
+	_, err := db.GetEngine(ctx).
+		Table("issue").
+		Select("id").
+		Where("repo_id = ? AND index = ? AND is_closed = ? AND is_pull = ?", repoID, indexStr, false, false).
+		Get(&issueID)
+	if err != nil {
+		return 0, err
+	}
+	return issueID, nil
+}
+
+// getOpenPullRequestsForRepo returns all open pull requests for a repository
+func getOpenPullRequestsForRepo(ctx *context.APIContext, repoID int64) ([]*issues_model.PullRequest, error) {
+	prs := make([]*issues_model.PullRequest, 0)
+	err := db.GetEngine(ctx).
+		Table("pull_request").
+		Join("INNER", "issue", "pull_request.issue_id = issue.id").
+		Where("pull_request.base_repo_id = ? AND pull_request.has_merged = ? AND issue.is_closed = ?", repoID, false, false).
+		Find(&prs)
+	return prs, err
+}
+
+// getIssueIDsByLabel returns all issue IDs that have the given label
+func getIssueIDsByLabel(ctx *context.APIContext, repoID, labelID int64) ([]int64, error) {
+	issueIDs := make([]int64, 0)
+	err := db.GetEngine(ctx).
+		Table("issue_label").
+		Select("issue_id").
+		Where("label_id = ?", labelID).
+		Find(&issueIDs)
+	return issueIDs, err
 }
 
 // getBlockerCount returns the number of open issues blocking the given issue
